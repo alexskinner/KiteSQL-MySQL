@@ -19,7 +19,7 @@ tiny_text tinytext variable true EMPTY NULL
 medium_text mediumtext variable true EMPTY NULL
 long_text longtext variable true EMPTY NULL
 serial_col serial 8 true EMPTY NULL
-bool_bit tinyint(1) 1 true EMPTY NULL
+bool_bit bit(1) 1 true EMPTY NULL
 multi_bit bit(8) 8 true EMPTY NULL
 
 statement ok

@@ -41,6 +41,7 @@ use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{DataType, ObjectNamePart};
 use sqlparser::dialect::{Dialect as SqlParserDialect, MySqlDialect as SqlParserMySqlDialect};
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -75,12 +76,15 @@ impl SqlDialect for MySqlDialect {
         &self.parser
     }
 
-    fn map_data_type(&self, data_type: &DataType) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
+    fn map_column_type(
+        &self,
+        data_type: &DataType,
+    ) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
         match data_type {
             DataType::Bit(Some(size)) => {
                 if *size == 1 {
                     Some(Ok(
-                        ColumnTypeSpec::new(LogicalType::Boolean).with_display("tinyint(1)")
+                        ColumnTypeSpec::new(LogicalType::Boolean).with_display("bit(1)")
                     ))
                 } else {
                     Some(Ok(ColumnTypeSpec::new(LogicalType::UBigint)
@@ -124,7 +128,23 @@ impl SqlDialect for MySqlDialect {
                     None
                 }
             }
-            _ => None,
+            _ => {
+                if let Some(result) = self.map_data_type(data_type) {
+                    let display_name = data_type.to_string().to_lowercase();
+                    Some(
+                        result
+                            .map(|logical| ColumnTypeSpec::new(logical).with_display(display_name)),
+                    )
+                } else {
+                    match LogicalType::try_from(data_type.clone()) {
+                        Ok(logical) => {
+                            let display_name = data_type.to_string().to_lowercase();
+                            Some(Ok(ColumnTypeSpec::new(logical).with_display(display_name)))
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
         }
     }
 }

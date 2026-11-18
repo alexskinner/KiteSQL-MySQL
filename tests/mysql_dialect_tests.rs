@@ -47,7 +47,7 @@ fn test_mysql_comment_syntax() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let storage = LmdbStorage::new(temp_dir.path())?;
 
-    let mut database_mysql = DataBaseBuilder::path(".")
+    let database_mysql = DataBaseBuilder::path(".")
         .with_mysql()?
         .build_with_storage(storage)?;
 
@@ -219,7 +219,7 @@ fn test_mysql_display_types() -> Result<(), DatabaseError> {
 
     let bool_bit_row = result.next_tuple(|_, row| row.clone())?.unwrap();
     assert_eq!(bool_bit_row[0], DataValue::from("bool_bit".to_string()));
-    assert_eq!(bool_bit_row[1], DataValue::from("tinyint(1)".to_string()));
+    assert_eq!(bool_bit_row[1], DataValue::from("bit(1)".to_string()));
 
     result.done()?;
 

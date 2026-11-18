@@ -36,14 +36,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_mysql()?
         .build_in_memory()?;
 
-    // Now you can use MySQL-specific types
-    database.run("CREATE TABLE users (id SERIAL PRIMARY KEY, bio MEDIUMTEXT)")?;
-    database.run("INSERT INTO users VALUES (1, 'Long biography text...')")?;
+    // Now you can use MySQL-specific types like MEDIUMTEXT
+    database.ddl("CREATE TABLE users (id INT PRIMARY KEY, bio MEDIUMTEXT)")?;
+    database.run("INSERT INTO users VALUES (1, 'Long biography text...')")?.done()?;
     
     let mut result = database.run("SELECT * FROM users WHERE id = 1")?;
-    while let Some(tuple) = result.next().await? {
-        println!("{:?}", tuple);
-    }
+    let tuple = result.next_tuple(|_, tuple| tuple.clone())?.expect("expected a row");
+    println!("{:?}", tuple);
+    result.done()?;
 
     Ok(())
 }

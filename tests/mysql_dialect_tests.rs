@@ -22,6 +22,45 @@ use kite_sql_mysql::MySqlBuilderExt;
 use tempfile::TempDir;
 
 #[test]
+fn test_mysql_dialect_selection() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+
+    // Test that .with_mysql() successfully registers the dialect
+    let builder = DataBaseBuilder::path(".").with_mysql()?;
+    let mut database = builder.build_with_storage(storage)?;
+
+    // MySQL dialect should accept backtick identifiers
+    database.ddl("CREATE TABLE `test` (`id` INT PRIMARY KEY)")?;
+    database.run("INSERT INTO `test` VALUES (1)")?.done()?;
+
+    let mut result = database.run("SELECT `id` FROM `test`")?;
+    let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(row[0], DataValue::Int32(1));
+    result.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_mysql_comment_syntax() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+
+    let mut database_mysql = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+
+    // MySQL dialect should accept `#` comments
+    let mut result = database_mysql.run("SELECT 1 # MySQL comment")?;
+    let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(row[0], DataValue::Int32(1));
+    result.done()?;
+
+    Ok(())
+}
+
+#[test]
 fn test_mysql_backtick_identifiers() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let storage = LmdbStorage::new(temp_dir.path())?;

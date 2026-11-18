@@ -12,16 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! MySQL dialect support for KiteSQL.
+#![doc = include_str!("../README.md")]
+
+//! # Quick Example
 //!
-//! This crate provides MySQL-specific functionality for KiteSQL, including:
-//! - MySQL dialect implementation
-//! - MySQL-specific type mappings (TINYTEXT, MEDIUMTEXT, LONGTEXT, BIT, SERIAL, etc.)
-//! - Builder extension trait for easy integration
-//!
-//! # Example
-//!
-//! ```no_run
+//! ```rust
 //! use kite_sql::db::DataBaseBuilder;
 //! use kite_sql_mysql::MySqlBuilderExt;
 //!
@@ -30,7 +25,13 @@
 //!     .with_mysql()?
 //!     .build_in_memory()?;
 //!
-//! database.run("CREATE TABLE users (id SERIAL PRIMARY KEY, bio MEDIUMTEXT)")?;
+//! // Use MySQL-specific types
+//! database.ddl("CREATE TABLE test (id INT PRIMARY KEY, bio MEDIUMTEXT)")?;
+//! database.run("INSERT INTO test VALUES (1, 'text')")?.done()?;
+//!
+//! let mut result = database.run("SELECT * FROM test WHERE id = 1")?;
+//! let tuple = result.next_tuple(|_, t| t.clone())?.expect("row");
+//! result.done()?;
 //! # Ok(())
 //! # }
 //! ```

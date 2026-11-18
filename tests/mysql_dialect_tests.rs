@@ -169,3 +169,177 @@ fn test_mysql_run_mut_statement_with_ddl() -> Result<(), DatabaseError> {
 
     Ok(())
 }
+
+#[test]
+fn test_mysql_display_types() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+
+    database.ddl(
+        "CREATE TABLE type_test (
+            id INT PRIMARY KEY,
+            tiny_text TINYTEXT,
+            medium_text MEDIUMTEXT,
+            long_text LONGTEXT,
+            serial_col SERIAL,
+            bool_bit BIT(1)
+        )",
+    )?;
+
+    let mut result = database.run("DESCRIBE type_test")?;
+
+    let id_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(id_row[0], DataValue::from("id".to_string()));
+    assert_eq!(id_row[1], DataValue::from("int".to_string()));
+
+    let tiny_text_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(tiny_text_row[0], DataValue::from("tiny_text".to_string()));
+    assert_eq!(tiny_text_row[1], DataValue::from("tinytext".to_string()));
+
+    let medium_text_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(
+        medium_text_row[0],
+        DataValue::from("medium_text".to_string())
+    );
+    assert_eq!(
+        medium_text_row[1],
+        DataValue::from("mediumtext".to_string())
+    );
+
+    let long_text_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(long_text_row[0], DataValue::from("long_text".to_string()));
+    assert_eq!(long_text_row[1], DataValue::from("longtext".to_string()));
+
+    let serial_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(serial_row[0], DataValue::from("serial_col".to_string()));
+    assert_eq!(serial_row[1], DataValue::from("serial".to_string()));
+
+    let bool_bit_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(bool_bit_row[0], DataValue::from("bool_bit".to_string()));
+    assert_eq!(bool_bit_row[1], DataValue::from("bit(1)".to_string()));
+
+    result.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_mysql_alter_display_types() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+
+    let mut database = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+
+    // Create a table with various MySQL display types
+    database.ddl(
+        "CREATE TABLE test_alter (
+            id INT PRIMARY KEY,
+            a BIT(1),
+            b BIT(8),
+            c TINYINT(1),
+            d MEDIUMTEXT,
+            e LONGTEXT,
+            f SERIAL,
+            g INT UNSIGNED,
+            h DECIMAL(10,2)
+        )",
+    )?;
+
+    // Helper to check a column's display type
+    let check_display = |db: &mut kite_sql::db::Database<LmdbStorage>,
+                         col: &str,
+                         expected: &str|
+     -> Result<(), DatabaseError> {
+        let mut result = db.run("DESCRIBE test_alter")?;
+        while let Some(row) = result.next_tuple(|_, row| row.clone())? {
+            let col_name = row[0].to_string();
+            if col_name == col {
+                let dtype = row[1].to_string();
+                assert_eq!(
+                    dtype, expected,
+                    "Column {} should be {}, got {}",
+                    col, expected, dtype
+                );
+                result.done()?;
+                return Ok(());
+            }
+        }
+        result.done()?;
+        panic!("Column {} not found in DESCRIBE", col);
+    };
+
+    // Check initial display types
+    check_display(&mut database, "a", "bit(1)")?;
+    check_display(&mut database, "b", "bit(8)")?;
+    check_display(&mut database, "c", "tinyint(1)")?;
+    check_display(&mut database, "d", "mediumtext")?;
+    check_display(&mut database, "e", "longtext")?;
+    check_display(&mut database, "f", "serial")?;
+    check_display(&mut database, "g", "int unsigned")?;
+    check_display(&mut database, "h", "decimal(10,2)")?;
+
+    // Test ADD COLUMN
+    database.ddl("ALTER TABLE test_alter ADD COLUMN i TINYTEXT")?;
+    check_display(&mut database, "i", "tinytext")?;
+
+    // Test DROP COLUMN
+    database.ddl("ALTER TABLE test_alter DROP COLUMN i")?;
+
+    // Test MODIFY COLUMN (change type to one with display mapping)
+    database.ddl("ALTER TABLE test_alter MODIFY COLUMN d TINYTEXT")?;
+    check_display(&mut database, "d", "tinytext")?;
+
+    // Test MODIFY COLUMN (change type to one without display mapping)
+    database.ddl("ALTER TABLE test_alter MODIFY COLUMN d VARCHAR(100)")?;
+    check_display(&mut database, "d", "varchar(100)")?;
+
+    // Test CHANGE COLUMN with rename
+    database.ddl("ALTER TABLE test_alter CHANGE COLUMN e e2 LONGTEXT")?;
+    check_display(&mut database, "e2", "longtext")?;
+
+    // Test RENAME COLUMN (should preserve display type)
+    database.ddl("ALTER TABLE test_alter RENAME COLUMN f TO f2")?;
+    check_display(&mut database, "f2", "serial")?;
+
+    // Test SET DEFAULT (should preserve display type)
+    database.ddl("ALTER TABLE test_alter ALTER COLUMN g SET DEFAULT 42")?;
+    check_display(&mut database, "g", "int unsigned")?;
+
+    // Test DROP DEFAULT (should preserve display type)
+    database.ddl("ALTER TABLE test_alter ALTER COLUMN g DROP DEFAULT")?;
+    check_display(&mut database, "g", "int unsigned")?;
+
+    // Test SET NOT NULL (should preserve display type)
+    database.ddl("ALTER TABLE test_alter ALTER COLUMN h SET NOT NULL")?;
+    check_display(&mut database, "h", "decimal(10,2)")?;
+
+    // Test DROP NOT NULL (should preserve display type)
+    database.ddl("ALTER TABLE test_alter ALTER COLUMN h DROP NOT NULL")?;
+    check_display(&mut database, "h", "decimal(10,2)")?;
+
+    // Drop database and reopen to test persistence
+    drop(database);
+
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+    database.load(kite_sql::db::CatalogKind::Table("test_alter".into()))?;
+
+    // Check display types after reopening
+    check_display(&mut database, "a", "bit(1)")?;
+    check_display(&mut database, "b", "bit(8)")?;
+    check_display(&mut database, "c", "tinyint(1)")?;
+    check_display(&mut database, "d", "varchar(100)")?;
+    check_display(&mut database, "e2", "longtext")?;
+    check_display(&mut database, "f2", "serial")?;
+    check_display(&mut database, "g", "int unsigned")?;
+    check_display(&mut database, "h", "decimal(10,2)")?;
+
+    Ok(())
+}

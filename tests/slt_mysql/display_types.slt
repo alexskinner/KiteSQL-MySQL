@@ -1,0 +1,34 @@
+# Test that MySQL types preserve their declared type for introspection
+
+statement ok
+CREATE TABLE display_test (
+    id INT PRIMARY KEY,
+    tiny_text TINYTEXT,
+    medium_text MEDIUMTEXT,
+    long_text LONGTEXT,
+    serial_col SERIAL,
+    bool_bit BIT(1),
+    multi_bit BIT(8)
+)
+
+query TTTTTTT
+DESCRIBE display_test
+----
+id int 4 false PRIMARY NULL
+tiny_text tinytext variable true EMPTY NULL
+medium_text mediumtext variable true EMPTY NULL
+long_text longtext variable true EMPTY NULL
+serial_col serial 8 true EMPTY NULL
+bool_bit bit(1) 1 true EMPTY NULL
+multi_bit bit(8) 8 true EMPTY NULL
+
+statement ok
+INSERT INTO display_test (id, tiny_text, medium_text, long_text, serial_col, bool_bit, multi_bit) VALUES (1, 'tiny', 'medium', 'long', 100, 1, 255)
+
+query ITTTITI
+SELECT * FROM display_test
+----
+1 tiny medium long 100 true 255
+
+statement ok
+DROP TABLE display_test

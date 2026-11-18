@@ -1,0 +1,28 @@
+# MySQL serial type: maps to bigint unsigned not null unique
+# Note: auto-increment is not implemented, just testing the type mapping
+# SERIAL is used with PRIMARY KEY here since KiteSQL requires a primary key
+
+statement ok
+CREATE TABLE serial_test (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50)
+)
+
+statement ok
+INSERT INTO serial_test VALUES (1, 'first')
+
+statement ok
+INSERT INTO serial_test VALUES (2, 'second')
+
+query IT
+SELECT * FROM serial_test ORDER BY id
+----
+1 first
+2 second
+
+# Test that serial is unique
+statement error
+INSERT INTO serial_test VALUES (1, 'duplicate')
+
+statement ok
+DROP TABLE serial_test

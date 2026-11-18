@@ -1,0 +1,36 @@
+# Test ALTER TABLE ADD COLUMN with MySQL-specific types
+
+statement ok
+CREATE TABLE alter_test (
+    id INT PRIMARY KEY
+)
+
+statement ok
+ALTER TABLE alter_test ADD COLUMN tiny_text TINYTEXT
+
+statement ok
+ALTER TABLE alter_test ADD COLUMN medium_text MEDIUMTEXT
+
+statement ok
+ALTER TABLE alter_test ADD COLUMN long_text LONGTEXT
+
+statement ok
+ALTER TABLE alter_test ADD COLUMN flag BIT(1)
+
+statement ok
+ALTER TABLE alter_test ADD COLUMN bits BIT(16)
+
+statement ok
+INSERT INTO alter_test VALUES (1, 'tiny', 'medium', 'long', 1, 12345)
+
+statement ok
+INSERT INTO alter_test VALUES (2, NULL, 'med2', 'long2', 0, NULL)
+
+query ITTTTTI
+SELECT * FROM alter_test ORDER BY id
+----
+1 tiny medium long true 12345
+2 NULL med2 long2 false NULL
+
+statement ok
+DROP TABLE alter_test

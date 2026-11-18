@@ -1,0 +1,24 @@
+# MySQL text types: mediumtext, longtext, tinytext
+
+statement ok
+CREATE TABLE text_test (
+    id INT PRIMARY KEY,
+    tiny_col TINYTEXT,
+    medium_col MEDIUMTEXT,
+    long_col LONGTEXT
+)
+
+statement ok
+INSERT INTO text_test VALUES (1, 'tiny', 'medium', 'long')
+
+statement ok
+INSERT INTO text_test VALUES (2, NULL, 'med2', 'long2')
+
+query ITTT
+SELECT * FROM text_test ORDER BY id
+----
+1 tiny medium long
+2 NULL med2 long2
+
+statement ok
+DROP TABLE text_test

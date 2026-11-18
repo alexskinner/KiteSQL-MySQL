@@ -1,0 +1,28 @@
+# MySQL bit type: bit(1) maps to Boolean, bit(n) maps to UBigint
+
+statement ok
+CREATE TABLE bit_test (
+    id INT PRIMARY KEY,
+    flag BIT(1),
+    bits BIT(8),
+    large_bits BIT(32)
+)
+
+statement ok
+INSERT INTO bit_test VALUES (1, 1, 255, 4294967295)
+
+statement ok
+INSERT INTO bit_test VALUES (2, 0, 128, 2147483648)
+
+statement ok
+INSERT INTO bit_test VALUES (3, NULL, NULL, NULL)
+
+query ITII
+SELECT * FROM bit_test ORDER BY id
+----
+1 true 255 4294967295
+2 false 128 2147483648
+3 NULL NULL NULL
+
+statement ok
+DROP TABLE bit_test

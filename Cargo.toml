@@ -1,0 +1,19 @@
+[package]
+name = "kite_sql_mysql"
+version = "0.7.0"
+edition = "2021"
+authors = ["Kould <kould2333@gmail.com>", "Xwg <loloxwg@gmail.com>"]
+description = "MySQL dialect support for KiteSQL"
+documentation = "https://docs.rs/kite_sql_mysql/latest/kite_sql_mysql/"
+license = "Apache-2.0"
+repository = "https://github.com/KipData/KiteSQL"
+keywords = ["sql", "mysql", "database"]
+categories = ["development-tools", "database"]
+
+[dependencies]
+kite_sql = { path = "..", default-features = false, features = ["parser"] }
+sqlparser = "0.61"
+
+[dev-dependencies]
+kite_sql = { path = "..", default-features = false, features = ["time", "macros", "parser", "lmdb", "spill", "decimal", "orm", "copy"] }
+tempfile = "3.10"

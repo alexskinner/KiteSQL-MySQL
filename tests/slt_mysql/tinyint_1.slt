@@ -1,0 +1,23 @@
+# Test that tinyint(1) still works in MySQL dialect
+
+statement ok
+CREATE TABLE tinyint_test (
+    id INT PRIMARY KEY,
+    tiny_val TINYINT(1),
+    other_tiny TINYINT
+)
+
+statement ok
+INSERT INTO tinyint_test VALUES (1, 127, -128)
+
+statement ok
+INSERT INTO tinyint_test VALUES (2, -128, 127)
+
+query III
+SELECT * FROM tinyint_test ORDER BY id
+----
+1 127 -128
+2 -128 127
+
+statement ok
+DROP TABLE tinyint_test

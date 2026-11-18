@@ -47,7 +47,7 @@ fn test_mysql_comment_syntax() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let storage = LmdbStorage::new(temp_dir.path())?;
 
-    let mut database_mysql = DataBaseBuilder::path(".")
+    let database_mysql = DataBaseBuilder::path(".")
         .with_mysql()?
         .build_with_storage(storage)?;
 

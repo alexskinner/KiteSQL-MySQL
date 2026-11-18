@@ -36,7 +36,7 @@
 //! # }
 //! ```
 
-use kite_sql::dialect::SqlDialect;
+use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{DataType, ObjectNamePart};
@@ -75,20 +75,33 @@ impl SqlDialect for MySqlDialect {
         &self.parser
     }
 
-    fn map_data_type(&self, data_type: &DataType) -> Option<Result<LogicalType, DatabaseError>> {
+    fn map_data_type(&self, data_type: &DataType) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
         match data_type {
             DataType::Bit(Some(size)) => {
                 if *size == 1 {
-                    Some(Ok(LogicalType::Boolean))
+                    Some(Ok(
+                        ColumnTypeSpec::new(LogicalType::Boolean).with_display("tinyint(1)")
+                    ))
                 } else {
-                    Some(Ok(LogicalType::UBigint))
+                    Some(Ok(ColumnTypeSpec::new(LogicalType::UBigint)
+                        .with_display(format!("bit({})", size))))
                 }
             }
-            DataType::TinyText => Some(Ok(LogicalType::Varchar(None, CharLengthUnits::Characters))),
-            DataType::MediumText => {
-                Some(Ok(LogicalType::Varchar(None, CharLengthUnits::Characters)))
-            }
-            DataType::LongText => Some(Ok(LogicalType::Varchar(None, CharLengthUnits::Characters))),
+            DataType::TinyText => Some(Ok(ColumnTypeSpec::new(LogicalType::Varchar(
+                None,
+                CharLengthUnits::Characters,
+            ))
+            .with_display("tinytext"))),
+            DataType::MediumText => Some(Ok(ColumnTypeSpec::new(LogicalType::Varchar(
+                None,
+                CharLengthUnits::Characters,
+            ))
+            .with_display("mediumtext"))),
+            DataType::LongText => Some(Ok(ColumnTypeSpec::new(LogicalType::Varchar(
+                None,
+                CharLengthUnits::Characters,
+            ))
+            .with_display("longtext"))),
             DataType::Custom(name, _modifiers) if name.0.len() == 1 => {
                 let type_name = match &name.0[0] {
                     ObjectNamePart::Identifier(ident) => &ident.value,
@@ -104,7 +117,9 @@ impl SqlDialect for MySqlDialect {
                 if type_name_lower.as_str() == "serial" {
                     // TODO: serial should also apply NOT NULL UNIQUE AUTO_INCREMENT constraints
                     // Currently only the type mapping (BIGINT UNSIGNED) is implemented
-                    Some(Ok(LogicalType::UBigint))
+                    Some(Ok(
+                        ColumnTypeSpec::new(LogicalType::UBigint).with_display("serial")
+                    ))
                 } else {
                     None
                 }

@@ -169,3 +169,59 @@ fn test_mysql_run_mut_statement_with_ddl() -> Result<(), DatabaseError> {
 
     Ok(())
 }
+
+#[test]
+fn test_mysql_display_types() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+
+    database.ddl(
+        "CREATE TABLE type_test (
+            id INT PRIMARY KEY,
+            tiny_text TINYTEXT,
+            medium_text MEDIUMTEXT,
+            long_text LONGTEXT,
+            serial_col SERIAL,
+            bool_bit BIT(1)
+        )",
+    )?;
+
+    let mut result = database.run("DESCRIBE type_test")?;
+
+    let id_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(id_row[0], DataValue::from("id".to_string()));
+    assert_eq!(id_row[1], DataValue::from("int".to_string()));
+
+    let tiny_text_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(tiny_text_row[0], DataValue::from("tiny_text".to_string()));
+    assert_eq!(tiny_text_row[1], DataValue::from("tinytext".to_string()));
+
+    let medium_text_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(
+        medium_text_row[0],
+        DataValue::from("medium_text".to_string())
+    );
+    assert_eq!(
+        medium_text_row[1],
+        DataValue::from("mediumtext".to_string())
+    );
+
+    let long_text_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(long_text_row[0], DataValue::from("long_text".to_string()));
+    assert_eq!(long_text_row[1], DataValue::from("longtext".to_string()));
+
+    let serial_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(serial_row[0], DataValue::from("serial_col".to_string()));
+    assert_eq!(serial_row[1], DataValue::from("serial".to_string()));
+
+    let bool_bit_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(bool_bit_row[0], DataValue::from("bool_bit".to_string()));
+    assert_eq!(bool_bit_row[1], DataValue::from("tinyint(1)".to_string()));
+
+    result.done()?;
+
+    Ok(())
+}

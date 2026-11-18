@@ -120,14 +120,16 @@ pub trait MySqlBuilderExt {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// ```rust
     /// use kite_sql::db::DataBaseBuilder;
     /// use kite_sql_mysql::MySqlBuilderExt;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let database = DataBaseBuilder::path(".")
+    /// let mut database = DataBaseBuilder::path(".")
     ///     .with_mysql()?
     ///     .build_in_memory()?;
+    ///
+    /// database.ddl("CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(50))")?;
     /// # Ok(())
     /// # }
     /// ```

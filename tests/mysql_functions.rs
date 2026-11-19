@@ -447,13 +447,11 @@ fn greatest_least_common_type() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let mut db = database(&dir)?;
 
-    // literals are DOUBLE in this engine: compared numerically, not as the first argument
-    assert_eq!(
-        scalar(&db, "select least(12, 1.005, 2.5)")?,
-        DataValue::Float64(OrderedFloat(1.005))
-    );
-    // any decimal widens to Decimal; exact comparison
     let dec = |s: &str| DataValue::Decimal(Decimal::from_str(s).unwrap());
+    // literals with a decimal point are exact DECIMAL: compared numerically, not as the
+    // first argument
+    assert_eq!(scalar(&db, "select least(12, 1.005, 2.5)")?, dec("1.005"));
+    // any decimal widens to Decimal; exact comparison
     db.ddl("create table n (id int primary key, d decimal(10,3), i int)")?;
     db.run("insert into n values (1, 1.005, 12)")?.done()?;
     assert_eq!(scalar(&db, "select least(i, d, 3) from n")?, dec("1.005"));
@@ -637,22 +635,27 @@ fn round_return_type_follows_argument() -> Result<(), DatabaseError> {
 #[test]
 fn round_literal_is_exact() -> Result<(), DatabaseError> {
     use ordered_float::OrderedFloat;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
 
     let dir = TempDir::new().unwrap();
     let mut db = database(&dir)?;
     let double = |v: f64| DataValue::Float64(OrderedFloat(v));
+    let dec = |s: &str| DataValue::Decimal(Decimal::from_str(s).unwrap());
 
-    // A literal rounds from its decimal form, as MySQL's exact-value literals do,
-    // although 1.005 is 1.00499999999999989... as a DOUBLE.
-    assert_eq!(scalar(&db, "select round(1.005, 2)")?, double(1.01));
-    assert_eq!(scalar(&db, "select round(2.675, 2)")?, double(2.68));
-    assert_eq!(scalar(&db, "select round(-1.005, 2)")?, double(-1.01));
-    assert_eq!(scalar(&db, "select round(2.5)")?, double(3.0));
-    assert_eq!(scalar(&db, "select round(-2.5)")?, double(-3.0));
-    assert_eq!(scalar(&db, "select round(123.456, -1)")?, double(120.0));
-    assert_eq!(scalar(&db, "select round(155.0, -1)")?, double(160.0));
+    // A literal with a decimal point is an exact DECIMAL, as in MySQL, so it rounds from its
+    // decimal form although 1.005 is 1.00499999999999989... as a DOUBLE.
+    assert_eq!(scalar(&db, "select round(1.005, 2)")?, dec("1.01"));
+    assert_eq!(scalar(&db, "select round(2.675, 2)")?, dec("2.68"));
+    assert_eq!(scalar(&db, "select round(-1.005, 2)")?, dec("-1.01"));
+    assert_eq!(scalar(&db, "select round(2.5)")?, dec("3"));
+    assert_eq!(scalar(&db, "select round(-2.5)")?, dec("-3"));
+    assert_eq!(scalar(&db, "select round(123.456, -1)")?, dec("120"));
+    assert_eq!(scalar(&db, "select round(155.0, -1)")?, dec("160"));
+    // Literals with an exponent are DOUBLE.
     assert_eq!(scalar(&db, "select round(1e300, 2)")?, double(1e300));
     assert_eq!(scalar(&db, "select round(1.5e-30, 2)")?, double(0.0));
+    assert_eq!(scalar(&db, "select round(1.005e0, 2)")?, double(1.0));
     // Stored and computed doubles still round as binary values.
     db.ddl("create table rl (id int primary key, f double)")?;
     db.run("insert into rl values (1, 1.005)")?.done()?;

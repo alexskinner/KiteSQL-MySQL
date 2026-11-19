@@ -17,7 +17,7 @@
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::function::scala::ScalarFunctionImpl;
 use kite_sql::expression::function::{FunctionSummary, PersistencePolicy};
-use kite_sql::expression::{ScalarExpression, TypeCast};
+use kite_sql::expression::TypeCast;
 use kite_sql::planner::{ExprRef, MetaArena};
 use kite_sql::types::tuple::Input;
 use kite_sql::types::value::DataValue;
@@ -72,6 +72,7 @@ impl FunctionPack for MySqlFunctions {
 
         // ROUND: single registration handles both 1 and 2 args via accepts_any_args
         registry.register_scalar(Round::new_variadic())?;
+        registry.register_scalar(IntegerDivide::new())?;
 
         // LAST_INSERT_ID() and LAST_INSERT_ID(expr); a host that registered its own keeps it.
         for with_arg in [false, true] {
@@ -1625,10 +1626,8 @@ impl ScalarFunctionImpl for Ifnull {
 /// decimal point), half away from zero. The result has the type of `x`: integers stay integers,
 /// DECIMAL stays DECIMAL, FLOAT/DOUBLE stay floating; other arguments are rounded as DOUBLE.
 ///
-/// A literal such as `1.005` is an exact DECIMAL in MySQL but a DOUBLE here, where it is stored
-/// as 1.00499999999999989...; a floating-point *literal* is therefore rounded from its shortest
-/// decimal form, so `ROUND(1.005, 2)` is 1.01 as in MySQL. Computed and stored doubles are
-/// rounded as binary values, as MySQL rounds DOUBLE.
+/// A literal such as `1.005` is an exact DECIMAL (the dialect reads it so), so `ROUND(1.005, 2)`
+/// is 1.01 as in MySQL; DOUBLE values, `1.005e0` included, are rounded as binary values.
 #[derive(Debug)]
 pub struct Round {
     summary: FunctionSummary,
@@ -1695,22 +1694,6 @@ fn round_float(x: f64, d: i64) -> f64 {
     }
 }
 
-/// Rounds a floating-point literal from its shortest decimal form (`1.005`, not the binary
-/// 1.00499999999999989...), half away from zero, as MySQL rounds an exact-value literal. Falls
-/// back to binary rounding when that form does not fit a DECIMAL.
-fn round_float_literal(x: f64, shortest: &str, d: i64) -> f64 {
-    use std::str::FromStr;
-    // Beyond 28 significant characters the form no longer fits a DECIMAL exactly.
-    if !x.is_finite() || shortest.len() > 28 {
-        return round_float(x, d);
-    }
-    rust_decimal::Decimal::from_str(shortest)
-        .ok()
-        .and_then(|exact| round_decimal(exact, d).ok())
-        .and_then(|rounded| rounded.to_string().parse::<f64>().ok())
-        .unwrap_or_else(|| round_float(x, d))
-}
-
 fn round_decimal(
     value: rust_decimal::Decimal,
     d: i64,
@@ -1766,10 +1749,6 @@ impl ScalarFunctionImpl for Round {
         if x.is_null() {
             return Ok(DataValue::Null);
         }
-        let is_literal = matches!(
-            arena.expression(args[0]),
-            ScalarExpression::Constant(DataValue::Float32(_) | DataValue::Float64(_))
-        );
         macro_rules! int {
             ($v:expr, $variant:ident) => {{
                 let rounded = round_integer(i128::from($v), d)?;
@@ -1787,12 +1766,6 @@ impl ScalarFunctionImpl for Round {
             DataValue::UInt32(v) => int!(v, UInt32),
             DataValue::UInt64(v) => int!(v, UInt64),
             DataValue::Decimal(v) => DataValue::Decimal(round_decimal(v, d)?),
-            DataValue::Float32(v) if is_literal => DataValue::Float32(OrderedFloat(
-                round_float_literal(f64::from(v.0), &v.0.to_string(), d) as f32,
-            )),
-            DataValue::Float64(v) if is_literal => {
-                DataValue::Float64(OrderedFloat(round_float_literal(v.0, &v.0.to_string(), d)))
-            }
             DataValue::Float32(v) => {
                 DataValue::Float32(OrderedFloat(round_float(v.0 as f64, d) as f32))
             }
@@ -1842,5 +1815,140 @@ impl ScalarFunctionImpl for Round {
 
     fn accepts_arity(&self, n: usize) -> bool {
         (1..=2).contains(&n)
+    }
+}
+
+/// `a DIV b` (the MySQL dialect rewrites the operator to this function): integer division,
+/// truncated toward zero. Integers divide exactly, a DECIMAL operand makes it an exact
+/// DECIMAL division and FLOAT, DOUBLE or string operands divide as DOUBLE. The result is
+/// BIGINT, or BIGINT UNSIGNED when an operand is unsigned; out of range is an error. Division
+/// by zero follows the statement's policy (NULL with a warning in queries).
+#[derive(Debug)]
+pub struct IntegerDivide {
+    summary: FunctionSummary,
+}
+
+/// Name the MySQL dialect gives `DIV`.
+pub(crate) const INTEGER_DIVIDE: &str = "div";
+
+impl IntegerDivide {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            summary: FunctionSummary {
+                name: INTEGER_DIVIDE.into(),
+                arg_types: vec![LogicalType::Bigint, LogicalType::Bigint], // Placeholder
+                persistence: PersistencePolicy::Durable,
+            },
+        })
+    }
+}
+
+impl ScalarFunctionImpl for IntegerDivide {
+    fn eval(
+        &self,
+        args: &[ExprRef],
+        arena: &(dyn MetaArena + '_),
+        tuple: Option<&dyn Input>,
+    ) -> Result<DataValue, DatabaseError> {
+        use rust_decimal::prelude::ToPrimitive;
+        use rust_decimal::Decimal;
+
+        let a = arena.expression(args[0]).eval(arena, tuple)?.into_owned();
+        let b = arena.expression(args[1]).eval(arena, tuple)?.into_owned();
+        if a.is_null() || b.is_null() {
+            return Ok(DataValue::Null);
+        }
+        let integer = |v: &DataValue| -> Option<i128> {
+            Some(match v {
+                DataValue::Boolean(v) => *v as i128,
+                DataValue::Int8(v) => *v as i128,
+                DataValue::Int16(v) => *v as i128,
+                DataValue::Int32(v) => *v as i128,
+                DataValue::Int64(v) => *v as i128,
+                DataValue::UInt8(v) => *v as i128,
+                DataValue::UInt16(v) => *v as i128,
+                DataValue::UInt32(v) => *v as i128,
+                DataValue::UInt64(v) => *v as i128,
+                _ => return None,
+            })
+        };
+        let exact = |v: &DataValue| -> Option<Decimal> {
+            match v {
+                DataValue::Decimal(d) => Some(*d),
+                v => integer(v).and_then(|i| Decimal::try_from_i128_with_scale(i, 0).ok()),
+            }
+        };
+        let quotient: Option<i128> = if let (Some(x), Some(y)) = (integer(&a), integer(&b)) {
+            (y != 0).then(|| x / y)
+        } else if let (Some(x), Some(y)) = (exact(&a), exact(&b)) {
+            if y.is_zero() {
+                None
+            } else {
+                Some(
+                    x.checked_div(y)
+                        .ok_or(DatabaseError::OverFlow)?
+                        .trunc()
+                        .to_i128()
+                        .ok_or(DatabaseError::OverFlow)?,
+                )
+            }
+        } else {
+            let double = |v: DataValue| match v.cast(&LogicalType::Double)? {
+                DataValue::Float64(f) => Ok(f.0),
+                _ => Err(DatabaseError::InvalidValue("DIV expects numbers".into())),
+            };
+            let (x, y) = (double(a.clone())?, double(b.clone())?);
+            if y == 0.0 {
+                None
+            } else {
+                let q = (x / y).trunc();
+                if !q.is_finite() || q.abs() >= 1e38 {
+                    return Err(DatabaseError::OverFlow);
+                }
+                Some(q as i128)
+            }
+        };
+        let Some(quotient) = quotient else {
+            kite_sql::diagnostics::division_by_zero()?;
+            return Ok(DataValue::Null);
+        };
+        let unsigned = [&a, &b].iter().any(|v| {
+            matches!(
+                v,
+                DataValue::UInt8(_)
+                    | DataValue::UInt16(_)
+                    | DataValue::UInt32(_)
+                    | DataValue::UInt64(_)
+            )
+        });
+        Ok(if unsigned {
+            DataValue::UInt64(u64::try_from(quotient).map_err(|_| DatabaseError::OverFlow)?)
+        } else {
+            DataValue::Int64(i64::try_from(quotient).map_err(|_| DatabaseError::OverFlow)?)
+        })
+    }
+
+    fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
+        None
+    }
+
+    fn return_type(&self) -> &LogicalType {
+        &LogicalType::Bigint
+    }
+
+    fn return_type_for(&self, arg_types: &[LogicalType]) -> LogicalType {
+        if arg_types.iter().any(LogicalType::is_unsigned_numeric) {
+            LogicalType::UBigint
+        } else {
+            LogicalType::Bigint
+        }
+    }
+
+    fn summary(&self) -> &FunctionSummary {
+        &self.summary
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true
     }
 }

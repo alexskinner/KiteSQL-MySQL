@@ -1,5 +1,6 @@
 # ROUND(x[, d]): half away from zero; negative d rounds left of the decimal point. A literal
-# rounds from its decimal form (MySQL exact-value literal), so 1.005 rounds up to 1.01.
+# with a decimal point is an exact DECIMAL, so 1.005 rounds up to 1.01 and the result keeps
+# DECIMAL's form (ROUND(2.5) is 3, as in MySQL).
 
 query RRR
 SELECT ROUND(1.005, 2), ROUND(2.675, 2), ROUND(-1.005, 2)
@@ -9,12 +10,12 @@ SELECT ROUND(1.005, 2), ROUND(2.675, 2), ROUND(-1.005, 2)
 query RRR
 SELECT ROUND(2.5), ROUND(-2.5), ROUND(1.4999)
 ----
-3.0 -3.0 1.0
+3 -3 1
 
 query RRR
 SELECT ROUND(123.456, 1), ROUND(123.456, -1), ROUND(123.456, -3)
 ----
-123.5 120.0 0.0
+123.5 120 0
 
 query III
 SELECT ROUND(1234, -2), ROUND(-1250, -2), ROUND(15, -1)

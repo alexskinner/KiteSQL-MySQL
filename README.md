@@ -15,6 +15,13 @@ This crate provides MySQL-specific functionality for KiteSQL:
 - **AUTO_INCREMENT**: columns and the `AUTO_INCREMENT = n` table option, on the core identity
   column; an explicit 0 generates like NULL; `LAST_INSERT_ID()` / `LAST_INSERT_ID(expr)`
   - `TINYINT(1)` works as expected
+- **Exact-value arithmetic** as in MySQL 8:
+  - A number with a decimal point and no exponent (`0.1`, `.5`, `2.50`) is an exact `DECIMAL`, so `0.1 + 0.2 = 0.3`; with an exponent (`1e2`) it stays `DOUBLE`. Integers above `BIGINT` up to 18446744073709551615 are `BIGINT UNSIGNED`.
+  - `/` on exact values gives `DECIMAL` with the dividend's scale plus `div_precision_increment` (4): `7 / 2 = 3.5000`, `1.0 / 3 = 0.33333`.
+  - `*` adds the operand scales (`1.10 * 2.5 = 2.750`); `+`, `-` and `%` keep the larger one. `%` and `MOD()` take the dividend's sign.
+  - `DIV` is integer division, truncating toward zero, with the precedence of `*` and `/`.
+  - Division or modulo by zero gives `NULL` with warning 1365.
+  - Limits: values hold up to 28 significant digits (longer literals are read as `DOUBLE`); MySQL keeps division intermediates truncated at nine decimals, here a chain is exact and rounded once at the end, so results differ in the last digit for chains like `2 / 3 * 1000000000`.
 - **Easy Integration**: Extension trait for `DataBaseBuilder`
 
 ## Usage

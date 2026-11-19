@@ -274,3 +274,72 @@ fn position_in_syntax_matches_mysql() -> Result<(), DatabaseError> {
     );
     Ok(())
 }
+
+// String function edge cases from mysql-test func_str/lpad/rpad.test.
+#[test]
+fn string_function_edge_cases_match_mysql() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let db = database(&dir)?;
+    let s = |v: &str| DataValue::from(v.to_string());
+
+    // negative SUBSTRING_INDEX counts scan from the right without overlapping matches
+    for (count, expected) in [(-1, "1"), (-2, "aa1"), (-3, "aaaa1"), (-4, "aaaaaa1")] {
+        assert_eq!(
+            scalar(
+                &db,
+                &format!("select substring_index('aaaaaaaaa1', 'aa', {count})")
+            )?,
+            s(expected)
+        );
+    }
+    assert_eq!(
+        scalar(&db, "select substring_index('www.tcx.se', '.', -2)")?,
+        s("tcx.se")
+    );
+    assert_eq!(
+        scalar(&db, "select substring_index('www.tcx.se', '.', -9)")?,
+        s("www.tcx.se")
+    );
+    assert_eq!(
+        scalar(&db, "select substring_index('www.tcx.se', '.', 2)")?,
+        s("www.tcx")
+    );
+
+    // LPAD/RPAD with an empty pad string return the (truncated) string
+    assert_eq!(scalar(&db, "select lpad('a', 5, '')")?, s("a"));
+    assert_eq!(scalar(&db, "select rpad('a', 5, '')")?, s("a"));
+    assert_eq!(
+        scalar(&db, "select lpad('I LOVE SQL in the morning', 20, '')")?,
+        s("I LOVE SQL in the mo")
+    );
+    assert_eq!(scalar(&db, "select rpad('ab', 5, 'xy')")?, s("abxyx"));
+
+    // results over max_allowed_packet (64 MiB) are NULL
+    assert_eq!(
+        scalar(&db, "select repeat('a', 100000000)")?,
+        DataValue::Null
+    );
+    assert_eq!(
+        scalar(&db, "select length(repeat('a', 64000))")?,
+        DataValue::Int32(64000)
+    );
+    assert_eq!(
+        scalar(&db, "select lpad('a', 100000000, 'b')")?,
+        DataValue::Null
+    );
+
+    // HEX of a DECIMAL is the hex of its integer value
+    assert_eq!(
+        scalar(&db, "select hex(cast(9007199254740993 as decimal(30,0)))")?,
+        s("20000000000001")
+    );
+    assert_eq!(
+        scalar(&db, "select hex(cast(2.5 as decimal(3,1)))")?,
+        s("3")
+    );
+    assert_eq!(
+        scalar(&db, "select hex(cast(-1.5 as decimal(3,1)))")?,
+        s("FFFFFFFFFFFFFFFE")
+    );
+    Ok(())
+}

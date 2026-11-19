@@ -77,6 +77,10 @@ impl FunctionPack for MySqlFunctions {
     }
 }
 
+/// MySQL's default `max_allowed_packet` (64 MiB): string functions return NULL instead of a
+/// longer result.
+const MAX_ALLOWED_PACKET: usize = 64 * 1024 * 1024;
+
 fn eval_text(
     arg: ExprRef,
     arena: &(dyn MetaArena + '_),
@@ -419,18 +423,26 @@ impl ScalarFunctionImpl for SubstringIndex {
                 s[..positions[cnt as usize - 1]].to_string()
             }
         } else {
-            let mut positions = Vec::new();
-            let mut start = 0;
-            while let Some(pos) = s[start..].find(&d) {
-                positions.push(start + pos);
-                start += pos + d.len();
+            // MySQL searches backwards from the end, each match ending before the previous one
+            // starts: substring_index('aaaaaaaaa1', 'aa', -2) is 'aa1', not 'aaa1'.
+            let abs_cnt = cnt.unsigned_abs() as usize;
+            let mut end = s.len();
+            let mut last = None;
+            for _ in 0..abs_cnt {
+                match s[..end].rfind(&d) {
+                    Some(pos) => {
+                        last = Some(pos);
+                        end = pos;
+                    }
+                    None => {
+                        last = None;
+                        break;
+                    }
+                }
             }
-            let abs_cnt = (-cnt) as usize;
-            if positions.len() < abs_cnt {
-                s.clone()
-            } else {
-                let idx = positions.len() - abs_cnt;
-                s[(positions[idx] + d.len())..].to_string()
+            match last {
+                Some(pos) => s[pos + d.len()..].to_string(),
+                None => s.clone(),
             }
         };
 
@@ -750,8 +762,7 @@ impl ScalarFunctionImpl for Lpad {
             _ => return Ok(DataValue::Null),
         };
         let padstr = pad.unwrap();
-
-        if padstr.is_empty() {
+        if target_len > MAX_ALLOWED_PACKET {
             return Ok(DataValue::Null);
         }
 
@@ -759,6 +770,10 @@ impl ScalarFunctionImpl for Lpad {
         if chars.len() >= target_len {
             let result: String = chars.iter().take(target_len).collect();
             return Ok(DataValue::from(result));
+        }
+        // nothing to pad with: MySQL returns the string as it is
+        if padstr.is_empty() {
+            return Ok(DataValue::from(s));
         }
 
         let pad_chars: Vec<char> = padstr.chars().collect();
@@ -823,8 +838,7 @@ impl ScalarFunctionImpl for Rpad {
             _ => return Ok(DataValue::Null),
         };
         let padstr = pad.unwrap();
-
-        if padstr.is_empty() {
+        if target_len > MAX_ALLOWED_PACKET {
             return Ok(DataValue::Null);
         }
 
@@ -832,6 +846,10 @@ impl ScalarFunctionImpl for Rpad {
         if chars.len() >= target_len {
             let result: String = chars.iter().take(target_len).collect();
             return Ok(DataValue::from(result));
+        }
+        // nothing to pad with: MySQL returns the string as it is
+        if padstr.is_empty() {
+            return Ok(DataValue::from(s));
         }
 
         let pad_chars: Vec<char> = padstr.chars().collect();
@@ -893,6 +911,13 @@ impl ScalarFunctionImpl for Repeat {
             DataValue::Int32(c) if *c >= 0 => *c as usize,
             _ => 0,
         };
+        // MySQL returns NULL (warning 1301) rather than build a result over max_allowed_packet
+        if s.len()
+            .checked_mul(n)
+            .is_none_or(|len| len > MAX_ALLOWED_PACKET)
+        {
+            return Ok(DataValue::Null);
+        }
 
         Ok(DataValue::from(s.repeat(n)))
     }
@@ -1091,6 +1116,17 @@ impl ScalarFunctionImpl for Hex {
             DataValue::UInt64(i) => format!("{:X}", *i),
             DataValue::Float32(f) => format!("{:X}", f.0.round() as i64 as u64),
             DataValue::Float64(f) => format!("{:X}", f.0.round() as i64 as u64),
+            DataValue::Decimal(d) => {
+                let rounded = d.round_dp_with_strategy(
+                    0,
+                    rust_decimal::RoundingStrategy::MidpointAwayFromZero,
+                );
+                let bits = rust_decimal::prelude::ToPrimitive::to_i64(&rounded)
+                    .map(|i| i as u64)
+                    .or_else(|| rust_decimal::prelude::ToPrimitive::to_u64(&rounded))
+                    .unwrap_or(u64::MAX);
+                format!("{:X}", bits)
+            }
             _ => match eval_value_as_text(args[0], arena, tuple)? {
                 Some(s) => s.bytes().map(|b| format!("{:02X}", b)).collect(),
                 None => return Ok(DataValue::Null),

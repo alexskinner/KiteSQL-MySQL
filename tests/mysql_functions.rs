@@ -323,7 +323,8 @@ fn lpad_rpad_functions() -> Result<(), DatabaseError> {
     assert_eq!(scalar(&db, "select rpad('hi', 5, '?')")?, text("hi???"));
     assert_eq!(scalar(&db, "select lpad('hello', 3, 'x')")?, text("hel"));
     assert_eq!(scalar(&db, "select lpad('hi', 4, 'ab')")?, text("abhi"));
-    assert_eq!(scalar(&db, "select lpad('test', 5, '')")?, DataValue::Null);
+    // MySQL 8 returns the string unchanged when there is nothing to pad with (lpad.result 80-85)
+    assert_eq!(scalar(&db, "select lpad('test', 5, '')")?, text("test"));
     Ok(())
 }
 

@@ -1,0 +1,42 @@
+# ROUND(x[, d]): half away from zero; negative d rounds left of the decimal point. A literal
+# rounds from its decimal form (MySQL exact-value literal), so 1.005 rounds up to 1.01.
+
+query RRR
+SELECT ROUND(1.005, 2), ROUND(2.675, 2), ROUND(-1.005, 2)
+----
+1.01 2.68 -1.01
+
+query RRR
+SELECT ROUND(2.5), ROUND(-2.5), ROUND(1.4999)
+----
+3.0 -3.0 1.0
+
+query RRR
+SELECT ROUND(123.456, 1), ROUND(123.456, -1), ROUND(123.456, -3)
+----
+123.5 120.0 0.0
+
+query III
+SELECT ROUND(1234, -2), ROUND(-1250, -2), ROUND(15, -1)
+----
+1200 -1300 20
+
+query R
+SELECT ROUND(NULL, 2)
+----
+NULL
+
+statement ok
+CREATE TABLE rd (id INT PRIMARY KEY, d DECIMAL(10,3), i INT)
+
+statement ok
+INSERT INTO rd VALUES (1, 1.005, 1250), (2, -2.345, -15)
+
+query IRI
+SELECT id, ROUND(d, 2), ROUND(i, -1) FROM rd ORDER BY id
+----
+1 1.01 1250
+2 -2.35 -20
+
+statement ok
+DROP TABLE rd

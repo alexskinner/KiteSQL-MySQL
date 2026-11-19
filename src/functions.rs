@@ -17,7 +17,7 @@
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::function::scala::ScalarFunctionImpl;
 use kite_sql::expression::function::{FunctionSummary, PersistencePolicy};
-use kite_sql::expression::TypeCast;
+use kite_sql::expression::{ScalarExpression, TypeCast};
 use kite_sql::planner::{ExprRef, MetaArena};
 use kite_sql::types::tuple::Input;
 use kite_sql::types::value::DataValue;
@@ -1616,6 +1616,11 @@ impl ScalarFunctionImpl for Ifnull {
 /// `ROUND(x[, d])`: rounds x to d decimal places (default 0, negative d rounds left of the
 /// decimal point), half away from zero. The result has the type of `x`: integers stay integers,
 /// DECIMAL stays DECIMAL, FLOAT/DOUBLE stay floating; other arguments are rounded as DOUBLE.
+///
+/// A literal such as `1.005` is an exact DECIMAL in MySQL but a DOUBLE here, where it is stored
+/// as 1.00499999999999989...; a floating-point *literal* is therefore rounded from its shortest
+/// decimal form, so `ROUND(1.005, 2)` is 1.01 as in MySQL. Computed and stored doubles are
+/// rounded as binary values, as MySQL rounds DOUBLE.
 #[derive(Debug)]
 pub struct Round {
     summary: FunctionSummary,
@@ -1682,6 +1687,22 @@ fn round_float(x: f64, d: i64) -> f64 {
     }
 }
 
+/// Rounds a floating-point literal from its shortest decimal form (`1.005`, not the binary
+/// 1.00499999999999989...), half away from zero, as MySQL rounds an exact-value literal. Falls
+/// back to binary rounding when that form does not fit a DECIMAL.
+fn round_float_literal(x: f64, shortest: &str, d: i64) -> f64 {
+    use std::str::FromStr;
+    // Beyond 28 significant characters the form no longer fits a DECIMAL exactly.
+    if !x.is_finite() || shortest.len() > 28 {
+        return round_float(x, d);
+    }
+    rust_decimal::Decimal::from_str(shortest)
+        .ok()
+        .and_then(|exact| round_decimal(exact, d).ok())
+        .and_then(|rounded| rounded.to_string().parse::<f64>().ok())
+        .unwrap_or_else(|| round_float(x, d))
+}
+
 fn round_decimal(
     value: rust_decimal::Decimal,
     d: i64,
@@ -1737,6 +1758,10 @@ impl ScalarFunctionImpl for Round {
         if x.is_null() {
             return Ok(DataValue::Null);
         }
+        let is_literal = matches!(
+            arena.expression(args[0]),
+            ScalarExpression::Constant(DataValue::Float32(_) | DataValue::Float64(_))
+        );
         macro_rules! int {
             ($v:expr, $variant:ident) => {{
                 let rounded = round_integer(i128::from($v), d)?;
@@ -1754,6 +1779,12 @@ impl ScalarFunctionImpl for Round {
             DataValue::UInt32(v) => int!(v, UInt32),
             DataValue::UInt64(v) => int!(v, UInt64),
             DataValue::Decimal(v) => DataValue::Decimal(round_decimal(v, d)?),
+            DataValue::Float32(v) if is_literal => DataValue::Float32(OrderedFloat(
+                round_float_literal(f64::from(v.0), &v.0.to_string(), d) as f32,
+            )),
+            DataValue::Float64(v) if is_literal => {
+                DataValue::Float64(OrderedFloat(round_float_literal(v.0, &v.0.to_string(), d)))
+            }
             DataValue::Float32(v) => {
                 DataValue::Float32(OrderedFloat(round_float(v.0 as f64, d) as f32))
             }
@@ -1779,8 +1810,12 @@ impl ScalarFunctionImpl for Round {
             Some(Boolean) => Bigint,
             Some(
                 t @ (Tinyint | UTinyint | Smallint | USmallint | Integer | UInteger | Bigint
-                | UBigint | Float | Double | Decimal(..)),
+                | UBigint | Float | Double),
             ) => t.clone(),
+            // The result scale depends on the rounding digits, which may be per row
+            // (`ROUND(d, 2)` of a DECIMAL(10,3) is 1.01, not 1.010): leave it unset so the
+            // rounded value keeps the scale ROUND gave it.
+            Some(Decimal(precision, _)) => Decimal(*precision, None),
             _ => Double,
         }
     }

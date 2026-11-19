@@ -635,6 +635,32 @@ fn round_return_type_follows_argument() -> Result<(), DatabaseError> {
 }
 
 #[test]
+fn round_literal_is_exact() -> Result<(), DatabaseError> {
+    use ordered_float::OrderedFloat;
+
+    let dir = TempDir::new().unwrap();
+    let mut db = database(&dir)?;
+    let double = |v: f64| DataValue::Float64(OrderedFloat(v));
+
+    // A literal rounds from its decimal form, as MySQL's exact-value literals do,
+    // although 1.005 is 1.00499999999999989... as a DOUBLE.
+    assert_eq!(scalar(&db, "select round(1.005, 2)")?, double(1.01));
+    assert_eq!(scalar(&db, "select round(2.675, 2)")?, double(2.68));
+    assert_eq!(scalar(&db, "select round(-1.005, 2)")?, double(-1.01));
+    assert_eq!(scalar(&db, "select round(2.5)")?, double(3.0));
+    assert_eq!(scalar(&db, "select round(-2.5)")?, double(-3.0));
+    assert_eq!(scalar(&db, "select round(123.456, -1)")?, double(120.0));
+    assert_eq!(scalar(&db, "select round(155.0, -1)")?, double(160.0));
+    assert_eq!(scalar(&db, "select round(1e300, 2)")?, double(1e300));
+    assert_eq!(scalar(&db, "select round(1.5e-30, 2)")?, double(0.0));
+    // Stored and computed doubles still round as binary values.
+    db.ddl("create table rl (id int primary key, f double)")?;
+    db.run("insert into rl values (1, 1.005)")?.done()?;
+    assert_eq!(scalar(&db, "select round(f, 2) from rl")?, double(1.0));
+    Ok(())
+}
+
+#[test]
 fn locate_empty_needle_and_start_bounds() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let db = database(&dir)?;

@@ -56,6 +56,36 @@ use std::sync::Arc;
 
 pub const DIALECT_MYSQL: &str = "mysql";
 
+/// MySQL's default `div_precision_increment`: the scale digits `/` and AVG add.
+const DIV_PRECISION_INCREMENT: u8 = 4;
+/// MySQL's largest DECIMAL precision and scale.
+const DECIMAL_MAX_PRECISION: u8 = 65;
+const DECIMAL_MAX_SCALE: u8 = 30;
+
+/// `AVG(arg)`'s MySQL type: DECIMAL(p + 4, s + 4) for an exact-value argument of precision
+/// p and scale s, at most DECIMAL(65,30) (an integer has scale 0 and its type's digit count
+/// as precision; a DECIMAL without a declared scale has scale 0, as in MySQL); `None` (DOUBLE)
+/// for anything else.
+fn mysql_avg_type(arg: &LogicalType) -> Option<LogicalType> {
+    let (precision, scale) = match arg {
+        // BOOLEAN is TINYINT(1) in MySQL: AVG(b) is DECIMAL(7,4).
+        LogicalType::Boolean | LogicalType::Tinyint | LogicalType::UTinyint => (3, 0),
+        LogicalType::Smallint | LogicalType::USmallint => (5, 0),
+        LogicalType::Integer | LogicalType::UInteger => (10, 0),
+        LogicalType::Bigint => (19, 0),
+        LogicalType::UBigint => (20, 0),
+        LogicalType::Decimal(precision, scale) => {
+            let scale = scale.unwrap_or(0);
+            (precision.unwrap_or(10).max(scale), scale)
+        }
+        _ => return None,
+    };
+    Some(LogicalType::Decimal(
+        Some((precision + DIV_PRECISION_INCREMENT).min(DECIMAL_MAX_PRECISION)),
+        Some((scale + DIV_PRECISION_INCREMENT).min(DECIMAL_MAX_SCALE)),
+    ))
+}
+
 /// MySQL dialect implementation for KiteSQL.
 #[derive(Debug)]
 pub struct MySqlDialect {
@@ -118,6 +148,13 @@ impl SqlDialect for MySqlDialect {
             },
             _ => StatementPolicy::default(),
         }
+    }
+
+    /// MySQL types AVG of an exact-value argument (integer or DECIMAL) as DECIMAL with
+    /// `div_precision_increment` (4) more digits of scale and precision than the argument;
+    /// FLOAT, DOUBLE and string arguments keep the engine's DOUBLE.
+    fn avg_return_type(&self, arg: &LogicalType) -> Option<LogicalType> {
+        mysql_avg_type(arg)
     }
 
     /// MySQL's level, code and text for each core diagnostic.
@@ -369,5 +406,44 @@ impl MySqlBuilderExt for kite_sql::db::DataBaseBuilder {
         self.register_dialect(mysql_dialect)
             .default_dialect(DIALECT_MYSQL)
             .map(|builder| builder.with_function_pack(Arc::new(MySqlFunctions)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn avg_type_adds_div_precision_increment() {
+        let decimal = |p, s| Some(LogicalType::Decimal(Some(p), Some(s)));
+        // Types as MySQL 8.0 reports them for CREATE TABLE ... AS SELECT AVG(col).
+        assert_eq!(mysql_avg_type(&LogicalType::Boolean), decimal(7, 4));
+        assert_eq!(mysql_avg_type(&LogicalType::Tinyint), decimal(7, 4));
+        assert_eq!(mysql_avg_type(&LogicalType::Smallint), decimal(9, 4));
+        assert_eq!(mysql_avg_type(&LogicalType::Integer), decimal(14, 4));
+        assert_eq!(mysql_avg_type(&LogicalType::Bigint), decimal(23, 4));
+        assert_eq!(mysql_avg_type(&LogicalType::UBigint), decimal(24, 4));
+        assert_eq!(
+            mysql_avg_type(&LogicalType::Decimal(Some(10), Some(2))),
+            decimal(14, 6)
+        );
+        assert_eq!(
+            mysql_avg_type(&LogicalType::Decimal(Some(5), None)),
+            decimal(9, 4)
+        );
+        assert_eq!(
+            mysql_avg_type(&LogicalType::Decimal(Some(30), Some(28))),
+            decimal(34, 30)
+        );
+        assert_eq!(
+            mysql_avg_type(&LogicalType::Decimal(Some(65), Some(30))),
+            decimal(65, 30)
+        );
+        assert_eq!(mysql_avg_type(&LogicalType::Double), None);
+        assert_eq!(mysql_avg_type(&LogicalType::Float), None);
+        assert_eq!(
+            mysql_avg_type(&LogicalType::Varchar(None, CharLengthUnits::Characters)),
+            None
+        );
     }
 }

@@ -39,6 +39,9 @@
 pub mod functions;
 pub use functions::MySqlFunctions;
 
+use kite_sql::diagnostics::{
+    Diagnostic, DiagnosticKind, DiagnosticLevel, DivisionByZero, StatementPolicy,
+};
 use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
@@ -97,6 +100,44 @@ impl SqlDialect for MySqlDialect {
             ControlFlow::Continue(())
         });
         err.map_or(Ok(()), Err)
+    }
+
+    /// MySQL's default sql_mode (STRICT_TRANS_TABLES, ERROR_FOR_DIVISION_BY_ZERO): queries
+    /// and SET evaluate division by zero to NULL and convert a malformed numeric string by
+    /// its leading numeric part, each with a warning; data-changing statements keep both as
+    /// errors, as strict mode does.
+    fn statement_policy(&self, stmt: &Statement) -> StatementPolicy {
+        match stmt {
+            Statement::Query(_) | Statement::Set(_) => StatementPolicy {
+                division_by_zero: DivisionByZero::NullWithWarning,
+                lenient_numeric_strings: true,
+            },
+            _ => StatementPolicy::default(),
+        }
+    }
+
+    /// MySQL's level, code and text for each core diagnostic.
+    fn map_diagnostic(&self, mut diagnostic: Diagnostic) -> Option<Diagnostic> {
+        let (level, code, message) = match &diagnostic.kind {
+            DiagnosticKind::DivisionByZero => {
+                (DiagnosticLevel::Warning, 1365, "Division by 0".to_string())
+            }
+            DiagnosticKind::TruncatedNumber { value, target } => (
+                DiagnosticLevel::Warning,
+                1292,
+                format!("Truncated incorrect {target} value: '{value}'"),
+            ),
+            DiagnosticKind::DataTruncated { column, row } => (
+                DiagnosticLevel::Note,
+                1265,
+                format!("Data truncated for column '{column}' at row {row}"),
+            ),
+            _ => return Some(diagnostic),
+        };
+        diagnostic.level = level;
+        diagnostic.code = code;
+        diagnostic.message = message;
+        Some(diagnostic)
     }
 
     fn map_column_type(

@@ -1,0 +1,30 @@
+# MySQL GROUP_CONCAT syntax: DISTINCT, ORDER BY (including a position) and SEPARATOR.
+
+statement ok
+CREATE TABLE gc (id INT PRIMARY KEY, nname VARCHAR(10), `attribute` VARCHAR(10))
+
+statement ok
+INSERT INTO gc VALUES (1, '2', 'color'), (2, '11', 'fabric'), (3, '2', 'color'), (4, '2', 'shape'), (5, '11', 'color')
+
+query T
+SELECT GROUP_CONCAT(`attribute` ORDER BY `attribute`) FROM gc WHERE id < 5
+----
+color,color,fabric,shape
+
+query T
+SELECT group_concat(nname order by 1 separator '#') FROM gc
+----
+11#11#2#2#2
+
+query T
+SELECT GROUP_CONCAT(DISTINCT nname ORDER BY nname DESC SEPARATOR ', ') FROM gc
+----
+2, 11
+
+query T
+SELECT GROUP_CONCAT(nname SEPARATOR '') FROM gc
+----
+2112211
+
+statement ok
+DROP TABLE gc

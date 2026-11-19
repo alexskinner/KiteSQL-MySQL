@@ -11,8 +11,11 @@ keywords = ["sql", "mysql", "database"]
 categories = ["development-tools", "database"]
 
 [dependencies]
-kite_sql = { path = "..", default-features = false, features = ["parser"] }
+kite_sql = { path = "..", default-features = false, features = ["parser", "decimal"] }
 sqlparser = "0.61"
+ordered-float = "4.6"
+uuid = { version = "1.10", features = ["v4"] }
+rust_decimal = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 kite_sql = { path = "..", default-features = false, features = ["time", "macros", "parser", "lmdb", "spill", "decimal", "orm", "copy"] }

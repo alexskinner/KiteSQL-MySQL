@@ -36,6 +36,9 @@
 //! # }
 //! ```
 
+pub mod functions;
+pub use functions::MySqlFunctions;
+
 use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
@@ -178,5 +181,6 @@ impl MySqlBuilderExt for kite_sql::db::DataBaseBuilder {
         let mysql_dialect = Arc::new(MySqlDialect::new());
         self.register_dialect(mysql_dialect)
             .default_dialect(DIALECT_MYSQL)
+            .map(|builder| builder.with_function_pack(Arc::new(MySqlFunctions)))
     }
 }

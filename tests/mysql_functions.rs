@@ -466,19 +466,12 @@ fn greatest_least_common_type() -> Result<(), DatabaseError> {
     // all strings compare as strings
     assert_eq!(scalar(&db, "select greatest('b', 'a')")?, text("b"));
     assert_eq!(scalar(&db, "select greatest('9', '10')")?, text("9"));
-    // a mix of numbers and strings compares as numbers (MySQL 8)
-    assert_eq!(
-        scalar(&db, "select greatest('10', 9)")?,
-        DataValue::Float64(OrderedFloat(10.0))
-    );
-    assert_eq!(
-        scalar(&db, "select least('b', 1)")?,
-        DataValue::Float64(OrderedFloat(0.0))
-    );
-    assert_eq!(
-        scalar(&db, "select greatest('2.5abc', 2)")?,
-        DataValue::Float64(OrderedFloat(2.5))
-    );
+    // a mix of numbers and strings compares as strings (MySQL 8: GREATEST('11', 5, 2) = '5')
+    assert_eq!(scalar(&db, "select greatest('10', 9)")?, text("9"));
+    assert_eq!(scalar(&db, "select least('b', 1)")?, text("1"));
+    assert_eq!(scalar(&db, "select greatest('2.5abc', 2)")?, text("2.5abc"));
+    assert_eq!(scalar(&db, "select greatest('11', 5, 2)")?, text("5"));
+    assert_eq!(scalar(&db, "select least('11', 5, 2)")?, text("11"));
     // booleans count as 0/1
     assert_eq!(
         scalar(&db, "select greatest(true, 2)")?,
@@ -503,6 +496,73 @@ fn greatest_least_common_type() -> Result<(), DatabaseError> {
     // NULL anywhere gives NULL
     assert_eq!(scalar(&db, "select greatest(1, null)")?, DataValue::Null);
     assert_eq!(scalar(&db, "select least(1.5, null, 2)")?, DataValue::Null);
+    Ok(())
+}
+
+#[test]
+fn greatest_least_temporal_comparison() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let mut db = database(&dir)?;
+    let date = |db: &_, s: &str| scalar(db, &format!("select cast('{s}' as date)"));
+    let datetime = |db: &_, s: &str| scalar(db, &format!("select cast('{s}' as datetime)"));
+
+    // a DATE argument makes numbers and strings compare as dates, and the result is a DATE
+    assert_eq!(
+        scalar(
+            &db,
+            "select least(date '2005-05-05', 20030303, 20010101, 20040404)"
+        )?,
+        date(&db, "2001-01-01")?
+    );
+    assert_eq!(
+        scalar(
+            &db,
+            "select least(date '2005-05-05', '20030303', '20010101', '20040404')"
+        )?,
+        date(&db, "2001-01-01")?
+    );
+    assert_eq!(
+        scalar(
+            &db,
+            "select greatest(date '1995-05-05', 19910101, 20050505, 19930303)"
+        )?,
+        date(&db, "2005-05-05")?
+    );
+    // two-digit years: 70-99 are 19xx, 00-69 are 20xx
+    assert_eq!(
+        scalar(&db, "select greatest(date '1995-05-05', '10-10-10')")?,
+        date(&db, "2010-10-10")?
+    );
+    assert_eq!(
+        scalar(&db, "select least(date '2011-01-01', '95-05-05')")?,
+        date(&db, "1995-05-05")?
+    );
+    // a DATETIME argument gives a DATETIME comparison; 'T' and fractions are accepted
+    assert_eq!(
+        scalar(
+            &db,
+            "select greatest(cast('2026-01-02' as datetime), '2026-01-03T12:34:56.1200')"
+        )?,
+        datetime(&db, "2026-01-03 12:34:56")?
+    );
+    assert_eq!(
+        scalar(
+            &db,
+            "select greatest(cast('2001-02-03' as datetime), 20101213123456)"
+        )?,
+        datetime(&db, "2010-12-13 12:34:56")?
+    );
+    db.ddl("create table td (id int primary key, d date, s varchar(20))")?;
+    db.run("insert into td values (1, '2024-01-02', '2024-01-03')")?
+        .done()?;
+    assert_eq!(
+        scalar(&db, "select greatest(d, s) from td")?,
+        date(&db, "2024-01-03")?
+    );
+    assert_eq!(
+        scalar(&db, "select least(d, s, null) from td")?,
+        DataValue::Null
+    );
     Ok(())
 }
 

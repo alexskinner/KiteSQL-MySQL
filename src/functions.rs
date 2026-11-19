@@ -1194,10 +1194,14 @@ impl ScalarFunctionImpl for Uuid {
     }
 }
 
-/// Common comparison type of GREATEST/LEAST arguments, following MySQL 8: any string makes the
-/// comparison a string comparison; all-temporal arguments compare as temporal; otherwise any
-/// decimal widens to Decimal (unless a float is present, which gives Double); booleans and
-/// integers compare as integers.
+/// Common comparison type of GREATEST/LEAST arguments, following MySQL 8:
+/// - a DATE/DATETIME/TIMESTAMP argument makes the comparison temporal: strings and numbers are
+///   read as dates (`'95-05-05'`, `'20010101'`, `20050505`, `20101213123456`). The type is DATE
+///   when every temporal argument is a DATE, otherwise DATETIME;
+/// - otherwise any string makes it a string comparison, also when numbers are mixed in
+///   (`GREATEST('11', 5, 2)` is `'5'`);
+/// - otherwise any float gives DOUBLE, any decimal DECIMAL, and booleans and integers compare as
+///   the widest integer.
 fn common_type(arg_types: &[LogicalType]) -> LogicalType {
     use LogicalType::*;
     let types: Vec<&LogicalType> = arg_types.iter().filter(|t| **t != SqlNull).collect();
@@ -1205,17 +1209,8 @@ fn common_type(arg_types: &[LogicalType]) -> LogicalType {
         return TEXT;
     }
     let is_temporal = |t: &LogicalType| matches!(t, Date | DateTime | Time(_) | TimeStamp(..));
-    if types.iter().all(|t| is_temporal(t)) {
-        if types.iter().all(|t| **t == *types[0]) {
-            return types[0].clone();
-        }
-        if types
-            .iter()
-            .all(|t| matches!(t, Date | DateTime | TimeStamp(..)))
-        {
-            return DateTime;
-        }
-        return TEXT;
+    if types.iter().all(|t| is_temporal(t)) && types.iter().all(|t| **t == *types[0]) {
+        return types[0].clone();
     }
     let is_text = |t: &LogicalType| matches!(t, Char(..) | Varchar(..));
     let is_numeric = |t: &LogicalType| {
@@ -1235,13 +1230,23 @@ fn common_type(arg_types: &[LogicalType]) -> LogicalType {
                 | Decimal(..)
         )
     };
-    if types.iter().all(|t| is_numeric(t) || is_text(t)) && types.iter().any(|t| is_text(t)) {
-        // A mix of numbers and strings compares as numbers (all strings: as strings).
-        return if types.iter().any(|t| is_numeric(t)) {
-            Double
+    if types.iter().any(|t| is_temporal(t)) {
+        if types.iter().any(|t| matches!(t, Time(_)))
+            || !types
+                .iter()
+                .all(|t| is_temporal(t) || is_text(t) || is_numeric(t))
+        {
+            return TEXT;
+        }
+        return if types.iter().filter(|t| is_temporal(t)).all(|t| **t == Date) {
+            Date
         } else {
-            TEXT
+            DateTime
         };
+    }
+    if types.iter().any(|t| is_text(t)) {
+        // Strings, alone or mixed with numbers, compare as strings.
+        return TEXT;
     }
     if !types.iter().all(|t| is_numeric(t)) {
         return TEXT;
@@ -1311,6 +1316,112 @@ fn lenient_f64(text: &str) -> f64 {
     t[..end].parse().unwrap_or(0.0)
 }
 
+/// Reads the digits of a MySQL numeric date (`[YY]YYMMDD[hhmmss]`) as `YYYY-MM-DD[ hh:mm:ss]`.
+/// An odd digit count has lost a leading zero (`10101` is `010101`).
+fn compact_date(digits: &str) -> Option<String> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let digits = if digits.len() % 2 == 1 {
+        format!("0{digits}")
+    } else {
+        digits.to_string()
+    };
+    let (year, rest) = match digits.len() {
+        6 | 12 => (two_digit_year(&digits[..2])?, &digits[2..]),
+        8 | 14 => (digits[..4].to_string(), &digits[4..]),
+        _ => return None,
+    };
+    let mut text = format!("{year}-{}-{}", &rest[..2], &rest[2..4]);
+    if rest.len() == 10 {
+        text.push_str(&format!(
+            " {}:{}:{}",
+            &rest[4..6],
+            &rest[6..8],
+            &rest[8..10]
+        ));
+    }
+    Some(text)
+}
+
+/// MySQL's two-digit years: 70-99 are 1970-1999, 00-69 are 2000-2069.
+fn two_digit_year(year: &str) -> Option<String> {
+    let year: u32 = year.parse().ok()?;
+    Some(format!(
+        "{}",
+        if year < 70 { 2000 + year } else { 1900 + year }
+    ))
+}
+
+/// Normalises a MySQL date string to `YYYY-MM-DD[ hh:mm:ss]`: two-digit years, any punctuation
+/// as delimiter, `T` between date and time, a fractional second (dropped), or bare digits.
+fn relaxed_date(text: &str) -> Option<String> {
+    let text = text.trim();
+    let whole = text.split('.').next().unwrap_or(text);
+    if let Some(date) = compact_date(whole) {
+        return Some(date);
+    }
+    let (date, time) = match text.find([' ', 'T']) {
+        Some(i) => (&text[..i], Some(text[i + 1..].trim())),
+        None => (text, None),
+    };
+    let date: Vec<&str> = date
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .collect();
+    let [year, month, day] = date.as_slice() else {
+        return None;
+    };
+    let year = if year.len() <= 2 {
+        two_digit_year(year)?
+    } else {
+        year.to_string()
+    };
+    let mut normalised = format!("{year:0>4}-{month:0>2}-{day:0>2}");
+    if let Some(time) = time {
+        let time = time.split('.').next().unwrap_or(time);
+        let parts: Vec<&str> = time
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .collect();
+        if !parts.is_empty() {
+            let part = |i: usize| parts.get(i).copied().unwrap_or("0");
+            normalised.push_str(&format!(" {:0>2}:{:0>2}:{:0>2}", part(0), part(1), part(2)));
+        }
+    }
+    Some(normalised)
+}
+
+/// Converts a GREATEST/LEAST argument for a temporal comparison: temporal values are cast,
+/// strings are read leniently and numbers as `[YY]YYMMDD[hhmmss]`, as MySQL does.
+fn to_temporal(value: DataValue, ty: &LogicalType) -> Result<DataValue, DatabaseError> {
+    let text = match &value {
+        DataValue::Utf8 { value: text, .. } => relaxed_date(text.as_ref()),
+        DataValue::Int8(_)
+        | DataValue::Int16(_)
+        | DataValue::Int32(_)
+        | DataValue::Int64(_)
+        | DataValue::UInt8(_)
+        | DataValue::UInt16(_)
+        | DataValue::UInt32(_)
+        | DataValue::UInt64(_) => compact_date(&value.to_string()),
+        DataValue::Decimal(v) => compact_date(&v.trunc().to_string()),
+        DataValue::Float32(v) => compact_date(&format!("{}", v.0.trunc())),
+        DataValue::Float64(v) => compact_date(&format!("{}", v.0.trunc())),
+        _ => None,
+    };
+    match text {
+        // A DATE comparison reads only the date part of a string or number.
+        Some(mut text) => {
+            if *ty == LogicalType::Date {
+                text.truncate(10);
+            }
+            DataValue::from(text).cast(ty)
+        }
+        None => value.cast(ty),
+    }
+}
+
 /// Shared GREATEST/LEAST evaluation: NULL if any argument is NULL, otherwise every argument is
 /// converted to the common type and the extreme value is returned.
 fn extremum(
@@ -1343,7 +1454,9 @@ fn extremum(
             DataValue::Boolean(b) => DataValue::Int8(b as i8),
             other => other,
         };
-        let value = if ty == LogicalType::Double {
+        let value = if matches!(ty, LogicalType::Date | LogicalType::DateTime) {
+            to_temporal(value, &ty)?
+        } else if ty == LogicalType::Double {
             match value {
                 DataValue::Utf8 { value, .. } => {
                     DataValue::Float64(ordered_float::OrderedFloat(lenient_f64(value.as_ref())))

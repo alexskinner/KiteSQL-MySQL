@@ -1,0 +1,62 @@
+# GREATEST/LEAST comparison rules (MySQL 8): NULL if any argument is NULL; strings mixed with
+# numbers compare as strings; a DATE/DATETIME argument makes strings and numbers compare as dates.
+
+query II
+SELECT GREATEST(1, 5, 3), LEAST(1, 5, 3)
+----
+5 1
+
+query TT
+SELECT GREATEST('11', 5, 2), LEAST('11', 5, 2)
+----
+5 11
+
+query TT
+SELECT GREATEST('B', 'A', 'C'), LEAST('B', 'A', 'C')
+----
+C A
+
+query TT
+SELECT GREATEST(1, NULL, 3), LEAST('a', NULL)
+----
+NULL NULL
+
+query T
+SELECT LEAST(DATE '2005-05-05', 20030303, 20010101, 20040404)
+----
+2001-01-01
+
+query T
+SELECT LEAST(DATE '2005-05-05', '20030303', '20010101', '20040404')
+----
+2001-01-01
+
+query T
+SELECT GREATEST(DATE '1995-05-05', 19910101, 20050505, 19930303)
+----
+2005-05-05
+
+query TT
+SELECT GREATEST(DATE '1995-05-05', '10-10-10'), LEAST(DATE '1995-05-05', '10-10-10')
+----
+2010-10-10 1995-05-05
+
+query T
+SELECT GREATEST(CAST('2001-02-03' AS DATETIME), 20101213123456)
+----
+2010-12-13 12:34:56
+
+statement ok
+CREATE TABLE gl (id INT PRIMARY KEY, d DATE, s VARCHAR(20), n INT)
+
+statement ok
+INSERT INTO gl VALUES (1, '2024-01-02', '2024-01-03', 20231231), (2, '2024-06-01', NULL, 20240701)
+
+query ITT
+SELECT id, GREATEST(d, s), LEAST(d, n) FROM gl ORDER BY id
+----
+1 2024-01-03 2023-12-31
+2 NULL 2024-06-01
+
+statement ok
+DROP TABLE gl

@@ -28,3 +28,17 @@ SELECT GROUP_CONCAT(nname SEPARATOR '') FROM gc
 
 statement ok
 DROP TABLE gc
+
+statement ok
+CREATE TABLE gcm (id INT PRIMARY KEY, k VARCHAR(10), v INT)
+
+statement ok
+INSERT INTO gcm VALUES (1, 'a', 10), (2, 'b', NULL), (3, 'c', 30)
+
+query T
+SELECT GROUP_CONCAT(k, '=', v ORDER BY id DESC SEPARATOR '&') FROM gcm
+----
+c=30&a=10
+
+statement ok
+DROP TABLE gcm

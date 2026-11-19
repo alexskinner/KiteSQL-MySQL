@@ -12,7 +12,7 @@ categories = ["development-tools", "database"]
 
 [dependencies]
 kite_sql = { path = "..", default-features = false, features = ["parser", "decimal"] }
-sqlparser = "0.61"
+sqlparser = { version = "0.61", features = ["visitor"] }
 ordered-float = "4.6"
 uuid = { version = "1.10", features = ["v4"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }

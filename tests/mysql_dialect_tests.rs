@@ -343,3 +343,54 @@ fn test_mysql_alter_display_types() -> Result<(), DatabaseError> {
 
     Ok(())
 }
+
+#[test]
+fn test_mysql_cast_target_type_limits() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+
+    for (sql, message) in [
+        (
+            "SELECT CAST(1/3 AS FLOAT(54))",
+            "Too-big precision 54 specified for 'CAST'. Maximum is 53.",
+        ),
+        ("SELECT CAST(1/3 AS DOUBLE(52))", "near '(52)'"),
+        ("SELECT CAST(999.00009 AS FLOAT(7,4))", "near '(7,4)'"),
+        ("SELECT CAST(999.00009 AS DOUBLE(7,4))", "near '(7,4)'"),
+        (
+            "SELECT CAST(12.1 AS DECIMAL(3, 4))",
+            "M must be >= D (column '12.1')",
+        ),
+        (
+            "SELECT CAST(12.1 AS DECIMAL(66, 2))",
+            "Too-big precision 66 specified for '12.1'. Maximum is 65.",
+        ),
+        (
+            "SELECT CAST(1 AS DECIMAL(40, 31))",
+            "Too big scale 31 specified for '1'. Maximum is 30.",
+        ),
+        (
+            "SELECT 1 FROM (SELECT CAST(1 AS FLOAT(60)) AS x) AS t",
+            "Too-big precision 60",
+        ),
+    ] {
+        let err = database
+            .run(sql)
+            .and_then(|iter| iter.done())
+            .expect_err(sql);
+        assert!(err.to_string().contains(message), "{sql}: {err}");
+    }
+
+    let mut result = database.run("SELECT CAST(1.5 AS FLOAT(53)), CAST(12.1 AS DECIMAL(5, 2))")?;
+    let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    // "12.1" or "12.10" depending on whether the engine pads DECIMAL scale
+    assert!(row[1].to_string().starts_with("12.1"), "{}", row[1]);
+    result.done()?;
+
+    database.ddl("CREATE TABLE t_cast_ddl (id INT PRIMARY KEY, f FLOAT(7,4), d DOUBLE(7,4))")?;
+
+    Ok(())
+}

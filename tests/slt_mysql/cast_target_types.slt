@@ -1,0 +1,43 @@
+# CAST target types follow MySQL's grammar and limits.
+query R
+select cast(1.5 as float(53))
+----
+1.5
+
+query R
+select cast(1.5 as double)
+----
+1.5
+
+query T
+select cast(12.25 as decimal(5, 2))
+----
+12.25
+
+statement error
+select cast(1.5 as float(54))
+
+statement error
+select cast(1.5 as double(52))
+
+statement error
+select cast(999.00009 as float(7, 4))
+
+statement error
+select cast(999.00009 as double(7, 4))
+
+statement error
+select cast(12.1 as decimal(3, 4))
+
+statement error
+select cast(12.1 as decimal(66, 2))
+
+statement error
+select cast(1 as decimal(40, 31))
+
+# Column types are not CAST targets: FLOAT(M,D) and DOUBLE(M,D) stay allowed in DDL.
+statement ok
+create table t_cast_ddl(id int primary key, f float(7, 4), d double(7, 4))
+
+statement ok
+drop table t_cast_ddl

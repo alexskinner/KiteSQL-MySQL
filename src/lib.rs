@@ -42,10 +42,13 @@ pub use functions::MySqlFunctions;
 use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
-use sqlparser::ast::{DataType, ObjectNamePart};
+use sqlparser::ast::{
+    visit_expressions_mut, DataType, ExactNumberInfo, Expr, ObjectNamePart, Statement,
+};
 use sqlparser::dialect::{Dialect as SqlParserDialect, MySqlDialect as SqlParserMySqlDialect};
 use std::convert::TryFrom;
 use std::fmt::Debug;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 pub const DIALECT_MYSQL: &str = "mysql";
@@ -77,6 +80,23 @@ impl SqlDialect for MySqlDialect {
 
     fn parser_dialect(&self) -> &dyn SqlParserDialect {
         &self.parser
+    }
+
+    fn rewrite(&self, stmt: &mut Statement) -> Result<(), DatabaseError> {
+        let mut err = None;
+        let _ = visit_expressions_mut(stmt, |expr| {
+            if let Expr::Cast {
+                data_type, expr, ..
+            } = expr
+            {
+                if let Err(e) = check_cast_type(data_type, expr) {
+                    err = Some(e);
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        });
+        err.map_or(Ok(()), Err)
     }
 
     fn map_column_type(
@@ -149,6 +169,63 @@ impl SqlDialect for MySqlDialect {
                 }
             }
         }
+    }
+}
+
+/// MySQL's largest FLOAT(p) precision, DECIMAL precision and DECIMAL scale.
+const MAX_FLOAT_PRECISION: u64 = 53;
+const MAX_DECIMAL_PRECISION: u64 = 65;
+const MAX_DECIMAL_SCALE: u64 = 30;
+
+/// The target types MySQL's grammar and limits allow in `CAST(expr AS type)`:
+/// `FLOAT(p)` with p <= 53 (no `FLOAT(M,D)`), plain `DOUBLE` / `REAL`, and
+/// `DECIMAL(M,D)` with D <= M <= 65 and D <= 30. The messages are MySQL's.
+fn check_cast_type(data_type: &DataType, expr: &Expr) -> Result<(), DatabaseError> {
+    let syntax = |near: String| {
+        Err(DatabaseError::InvalidValue(format!(
+            "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '{near}'"
+        )))
+    };
+    match data_type {
+        DataType::Float(ExactNumberInfo::Precision(p)) if *p > MAX_FLOAT_PRECISION => {
+            Err(DatabaseError::InvalidValue(format!(
+                "Too-big precision {p} specified for 'CAST'. Maximum is {MAX_FLOAT_PRECISION}."
+            )))
+        }
+        DataType::Float(info @ ExactNumberInfo::PrecisionAndScale(..))
+        | DataType::Double(
+            info @ (ExactNumberInfo::Precision(_) | ExactNumberInfo::PrecisionAndScale(..)),
+        ) => syntax(info.to_string()),
+        DataType::Decimal(ExactNumberInfo::PrecisionAndScale(p, s))
+        | DataType::Numeric(ExactNumberInfo::PrecisionAndScale(p, s))
+        | DataType::Dec(ExactNumberInfo::PrecisionAndScale(p, s)) => {
+            let (p, s) = (*p, *s as u64);
+            if p > MAX_DECIMAL_PRECISION {
+                Err(DatabaseError::InvalidValue(format!(
+                    "Too-big precision {p} specified for '{expr}'. Maximum is {MAX_DECIMAL_PRECISION}."
+                )))
+            } else if s > MAX_DECIMAL_SCALE {
+                Err(DatabaseError::InvalidValue(format!(
+                    "Too big scale {s} specified for '{expr}'. Maximum is {MAX_DECIMAL_SCALE}."
+                )))
+            } else if s > p {
+                Err(DatabaseError::InvalidValue(format!(
+                    "For float(M,D), double(M,D) or decimal(M,D), M must be >= D (column '{expr}')."
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        DataType::Decimal(ExactNumberInfo::Precision(p))
+        | DataType::Numeric(ExactNumberInfo::Precision(p))
+        | DataType::Dec(ExactNumberInfo::Precision(p))
+            if *p > MAX_DECIMAL_PRECISION =>
+        {
+            Err(DatabaseError::InvalidValue(format!(
+                "Too-big precision {p} specified for '{expr}'. Maximum is {MAX_DECIMAL_PRECISION}."
+            )))
+        }
+        _ => Ok(()),
     }
 }
 

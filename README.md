@@ -11,7 +11,9 @@ This crate provides MySQL-specific functionality for KiteSQL:
   - `TINYTEXT`, `MEDIUMTEXT`, `LONGTEXT` → `VARCHAR(None)`
   - `BIT(1)` → `BOOLEAN`
   - `BIT(n)` (n > 1) → `UBIGINT`
-  - `SERIAL` → `UBIGINT` (with TODO for auto-increment, NOT NULL, UNIQUE)
+  - `SERIAL` → `UBIGINT NOT NULL AUTO_INCREMENT UNIQUE`
+- **AUTO_INCREMENT**: columns and the `AUTO_INCREMENT = n` table option, on the core identity
+  column; an explicit 0 generates like NULL; `LAST_INSERT_ID()` / `LAST_INSERT_ID(expr)`
   - `TINYINT(1)` works as expected
 - **Easy Integration**: Extension trait for `DataBaseBuilder`
 
@@ -64,8 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Serial Type
 
-- `SERIAL`: Maps to `UBIGINT`
-  - **Note**: Auto-increment, NOT NULL, and UNIQUE constraints are not yet implemented automatically
+- `SERIAL`: Maps to `UBIGINT NOT NULL AUTO_INCREMENT UNIQUE`
 
 ### Integer Types
 

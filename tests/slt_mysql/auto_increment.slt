@@ -1,0 +1,234 @@
+# AUTO_INCREMENT. Expected results come from MySQL 8.0.40 (default sql_mode).
+
+statement ok
+CREATE TABLE ai_a (id INT AUTO_INCREMENT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO ai_a (v) VALUES (1), (2)
+
+# a multi-row insert reports its first generated value
+query I
+SELECT LAST_INSERT_ID()
+----
+1
+
+# NULL and 0 both generate
+statement ok
+INSERT INTO ai_a VALUES (NULL, 3), (0, 4)
+
+query I
+SELECT LAST_INSERT_ID()
+----
+3
+
+# an explicit value moves the counter and leaves LAST_INSERT_ID() alone
+statement ok
+INSERT INTO ai_a VALUES (10, 5)
+
+query I
+SELECT LAST_INSERT_ID()
+----
+3
+
+statement ok
+INSERT INTO ai_a (v) VALUES (6)
+
+query I
+SELECT LAST_INSERT_ID()
+----
+11
+
+# an explicit value in the middle of a multi-row insert
+statement ok
+INSERT INTO ai_a VALUES (NULL, 7), (20, 8), (NULL, 9)
+
+query I
+SELECT LAST_INSERT_ID()
+----
+12
+
+# a negative value is stored and does not move the counter
+statement ok
+INSERT INTO ai_a VALUES (-5, 10)
+
+statement ok
+INSERT INTO ai_a (v) VALUES (11)
+
+statement ok
+INSERT INTO ai_a (id, v) VALUES (DEFAULT, 12)
+
+statement ok
+INSERT INTO ai_a VALUES ('30', 13)
+
+statement ok
+INSERT INTO ai_a (v) VALUES (14)
+
+query II
+SELECT id, v FROM ai_a ORDER BY id
+----
+-5 10
+1 1
+2 2
+3 3
+4 4
+10 5
+11 6
+12 7
+20 8
+21 9
+22 11
+23 12
+30 13
+31 14
+
+query II
+SELECT LAST_INSERT_ID(42), LAST_INSERT_ID()
+----
+42 42
+
+statement ok
+INSERT INTO ai_a (id, v) VALUES (50, 15)
+
+query I
+SELECT LAST_INSERT_ID()
+----
+42
+
+# deleted values are not reused
+statement ok
+DELETE FROM ai_a WHERE id = 50
+
+statement ok
+INSERT INTO ai_a (v) VALUES (16)
+
+query I
+SELECT id FROM ai_a WHERE v = 16
+----
+51
+
+statement ok
+INSERT INTO ai_a (v) SELECT v + 100 FROM ai_a WHERE id IN (1, 2)
+
+query I
+SELECT LAST_INSERT_ID()
+----
+52
+
+query II
+SELECT id, v FROM ai_a WHERE id > 51 ORDER BY id
+----
+52 101
+53 102
+
+# TRUNCATE restarts the counter at 1
+statement ok
+TRUNCATE TABLE ai_a
+
+statement ok
+INSERT INTO ai_a (v) VALUES (17)
+
+query II
+SELECT id, v FROM ai_a
+----
+1 17
+
+statement ok
+DROP TABLE ai_a
+
+# the AUTO_INCREMENT table option; TRUNCATE still restarts at 1
+statement ok
+CREATE TABLE ai_b (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, v INT, PRIMARY KEY (id)) AUTO_INCREMENT = 100
+
+statement ok
+INSERT INTO ai_b (v) VALUES (1), (2)
+
+query II
+SELECT id, v FROM ai_b ORDER BY id
+----
+100 1
+101 2
+
+statement ok
+TRUNCATE ai_b
+
+statement ok
+INSERT INTO ai_b (v) VALUES (3)
+
+query II
+SELECT id, v FROM ai_b
+----
+1 3
+
+statement ok
+DROP TABLE ai_b
+
+# at the type's maximum the next insert fails on the key (MySQL: ERROR 1062)
+statement ok
+CREATE TABLE ai_c (id TINYINT AUTO_INCREMENT PRIMARY KEY)
+
+statement ok
+INSERT INTO ai_c VALUES (126)
+
+statement ok
+INSERT INTO ai_c VALUES (NULL)
+
+statement error
+INSERT INTO ai_c VALUES (NULL)
+
+query I
+SELECT id FROM ai_c ORDER BY id
+----
+126
+127
+
+statement ok
+DROP TABLE ai_c
+
+# an AUTO_INCREMENT column that is not the primary key
+statement ok
+CREATE TABLE ai_d (k INT PRIMARY KEY, id INT AUTO_INCREMENT, UNIQUE KEY (id))
+
+statement ok
+INSERT INTO ai_d (k) VALUES (1), (2)
+
+query II
+SELECT k, id FROM ai_d ORDER BY k
+----
+1 1
+2 2
+
+statement ok
+DROP TABLE ai_d
+
+# MySQL: ERROR 1075
+statement error
+CREATE TABLE ai_e (k INT PRIMARY KEY, id INT AUTO_INCREMENT, v INT)
+
+# MySQL: ERROR 1075
+statement error
+CREATE TABLE ai_e (id INT AUTO_INCREMENT PRIMARY KEY, j INT AUTO_INCREMENT)
+
+# MySQL: ERROR 1171
+statement error
+CREATE TABLE ai_e (id INT NULL AUTO_INCREMENT PRIMARY KEY, v INT)
+
+# SERIAL is BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE
+statement ok
+CREATE TABLE ai_f (id SERIAL, v INT, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO ai_f (v) VALUES (1), (2)
+
+query II
+SELECT id, v FROM ai_f ORDER BY id
+----
+1 1
+2 2
+
+statement ok
+DROP TABLE ai_f
+
+query II
+SELECT LAST_INSERT_ID(NULL), LAST_INSERT_ID()
+----
+NULL 0

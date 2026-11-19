@@ -73,6 +73,14 @@ impl FunctionPack for MySqlFunctions {
         // ROUND: single registration handles both 1 and 2 args via accepts_any_args
         registry.register_scalar(Round::new_variadic())?;
 
+        // LAST_INSERT_ID() and LAST_INSERT_ID(expr); a host that registered its own keeps it.
+        for with_arg in [false, true] {
+            match registry.register_scalar(crate::auto_increment::LastInsertId::new(with_arg)) {
+                Ok(()) | Err(DatabaseError::FunctionAlreadyExists(_)) => {}
+                Err(err) => return Err(err),
+            }
+        }
+
         Ok(())
     }
 }

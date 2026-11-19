@@ -1,0 +1,21 @@
+# MySQL LIKE: backslash escapes by default; the default collation is case-insensitive.
+
+query TTTT
+select '100_' like '100\\_', '1000' like '100\\_', 'A' like 'a', 'a_b' like 'a#_b' escape '#'
+----
+true false true true
+
+statement ok
+create table like_t(id int primary key, c varchar(20))
+
+statement ok
+insert into like_t values (1, 'hello'), (2, 'HELLO'), (3, 'HELLO MY'), (4, 'a')
+
+query I rowsort
+select id from like_t having c like 'hello'
+----
+1
+2
+
+statement ok
+drop table like_t

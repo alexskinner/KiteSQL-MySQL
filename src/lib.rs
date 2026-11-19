@@ -46,7 +46,7 @@ use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{
-    visit_expressions_mut, DataType, ExactNumberInfo, Expr, ObjectNamePart, Statement,
+    visit_expressions_mut, DataType, ExactNumberInfo, Expr, ObjectNamePart, Statement, Value,
 };
 use sqlparser::dialect::{Dialect as SqlParserDialect, MySqlDialect as SqlParserMySqlDialect};
 use std::convert::TryFrom;
@@ -88,6 +88,10 @@ impl SqlDialect for MySqlDialect {
     fn rewrite(&self, stmt: &mut Statement) -> Result<(), DatabaseError> {
         let mut err = None;
         let _ = visit_expressions_mut(stmt, |expr| {
+            if let Err(e) = rewrite_like(expr) {
+                err = Some(e);
+                return ControlFlow::Break(());
+            }
             if let Expr::Cast {
                 data_type, expr, ..
             } = expr
@@ -217,6 +221,71 @@ impl SqlDialect for MySqlDialect {
 const MAX_FLOAT_PRECISION: u64 = 53;
 const MAX_DECIMAL_PRECISION: u64 = 65;
 const MAX_DECIMAL_SCALE: u64 = 30;
+
+/// MySQL `LIKE`: backslash is the default escape character (`'100\\_'` matches `100_`), and the
+/// default collation (utf8mb4_0900_ai_ci) compares case-insensitively, so a plain `LIKE` becomes
+/// the generic engine's `ILIKE`. Operands marked binary or case-sensitive (`BINARY x`,
+/// `CAST(x AS BINARY)`, `COLLATE …_bin` / `…_cs` / `binary`) keep a case-sensitive `LIKE`.
+/// Accent folding (`'a' LIKE 'À'`) and per-column collations are not modelled.
+fn rewrite_like(expr: &mut Expr) -> Result<(), DatabaseError> {
+    let Expr::Like {
+        negated,
+        any,
+        expr: lhs,
+        pattern,
+        escape_char,
+    } = expr
+    else {
+        return Ok(());
+    };
+    // two different explicit collations: MySQL error 1267
+    if let (Expr::Collate { collation: l, .. }, Expr::Collate { collation: r, .. }) =
+        (lhs.as_ref(), pattern.as_ref())
+    {
+        let (l, r) = (l.to_string(), r.to_string());
+        if !l.eq_ignore_ascii_case(&r) {
+            return Err(DatabaseError::InvalidValue(format!(
+                "Illegal mix of collations ({l},EXPLICIT) and ({r},EXPLICIT) for operation 'like'"
+            )));
+        }
+    }
+    if escape_char.is_none() {
+        *escape_char = Some(Value::SingleQuotedString("\\".to_string()));
+    }
+    let case_sensitive = is_case_sensitive(lhs) || is_case_sensitive(pattern);
+    // the engine has no COLLATE; its only effect on LIKE is the case sensitivity decided here
+    for operand in [&mut *lhs, &mut *pattern] {
+        if let Expr::Collate { expr: inner, .. } = operand.as_mut() {
+            *operand = inner.clone();
+        }
+    }
+    if case_sensitive {
+        return Ok(());
+    }
+    *expr = Expr::ILike {
+        negated: *negated,
+        any: *any,
+        expr: lhs.clone(),
+        pattern: pattern.clone(),
+        escape_char: escape_char.clone(),
+    };
+    Ok(())
+}
+
+fn is_case_sensitive(expr: &Expr) -> bool {
+    match expr {
+        Expr::Collate { collation, .. } => {
+            let name = collation.to_string().to_ascii_lowercase();
+            name.ends_with("_bin") || name.ends_with("_cs") || name == "binary"
+        }
+        Expr::Cast { data_type, .. } => matches!(
+            data_type,
+            DataType::Binary(_) | DataType::Varbinary(_) | DataType::Blob(_)
+        ),
+        Expr::Nested(inner) => is_case_sensitive(inner),
+        _ => false,
+    }
+}
 
 /// The target types MySQL's grammar and limits allow in `CAST(expr AS type)`:
 /// `FLOAT(p)` with p <= 53 (no `FLOAT(M,D)`), plain `DOUBLE` / `REAL`, and

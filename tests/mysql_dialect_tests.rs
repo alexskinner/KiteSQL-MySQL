@@ -394,3 +394,67 @@ fn test_mysql_cast_target_type_limits() -> Result<(), DatabaseError> {
 
     Ok(())
 }
+
+#[test]
+fn test_mysql_like_escape_and_case() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = DataBaseBuilder::path(".")
+        .with_mysql()?
+        .build_with_storage(storage)?;
+    database.ddl("CREATE TABLE t_like (id INT PRIMARY KEY, c VARCHAR(10))")?;
+    database
+        .run("INSERT INTO t_like VALUES (1, 'hello'), (2, 'HELLO'), (3, 'HELLO MY'), (4, 'a')")?
+        .done()?;
+    let one = |sql: &str| -> Result<DataValue, DatabaseError> {
+        let mut result = database.run(sql)?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        result.done()?;
+        Ok(row[0].clone())
+    };
+    for (sql, expected) in [
+        // backslash is the default escape character
+        (r"SELECT '100_' LIKE '100\\_'", true),
+        (r"SELECT '1000' LIKE '100\\_'", false),
+        (r"SELECT 'David_' LIKE 'David\_'", true),
+        (r"SELECT 'a%' LIKE 'a\%'", true),
+        (r"SELECT 'ab' LIKE 'a\%'", false),
+        // an explicit ESCAPE still wins
+        (r"SELECT 'a\\b' LIKE 'a\\%' ESCAPE '#'", true),
+        (r"SELECT 'a\\b' LIKE 'a\\\\b'", true),
+        ("SELECT 'a_b' LIKE 'a#_b' ESCAPE '#'", true),
+        // the default collation is case-insensitive
+        ("SELECT 'A' LIKE 'a'", true),
+        ("SELECT 'фЫва' LIKE '%ФЫВ%'", true),
+        ("SELECT 'Hello' NOT LIKE 'h%'", false),
+        // binary / _bin operands stay case-sensitive
+        ("SELECT 'A' COLLATE utf8mb4_bin LIKE 'a'", false),
+    ] {
+        assert_eq!(one(sql)?, DataValue::Boolean(expected), "{sql}");
+    }
+
+    let err = database
+        .run("SELECT 'a' COLLATE utf8mb4_bin LIKE 'A' COLLATE utf8mb4_unicode_ci")
+        .and_then(|iter| iter.done())
+        .expect_err("mixed explicit collations");
+    assert!(
+        err.to_string().contains("Illegal mix of collations"),
+        "{err}"
+    );
+
+    let mut ids = Vec::new();
+    let mut result = database.run("SELECT id FROM t_like WHERE c LIKE '%HELLO%' ORDER BY id")?;
+    while let Some(row) = result.next_tuple(|_, row| row.clone())? {
+        ids.push(row[0].clone());
+    }
+    result.done()?;
+    assert_eq!(
+        ids,
+        vec![
+            DataValue::Int32(1),
+            DataValue::Int32(2),
+            DataValue::Int32(3)
+        ]
+    );
+    Ok(())
+}

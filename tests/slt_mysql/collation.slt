@@ -1,0 +1,380 @@
+# MySQL 8's default collation, utf8mb4_0900_ai_ci: text compares case- and accent-insensitively
+# and NO PAD (trailing spaces count), in comparisons, IN, sorting, grouping, DISTINCT, UNION,
+# MIN/MAX and unique keys. BINARY operands and _bin / _cs collations compare byte-wise.
+# Expected values come from MySQL 8.0.40.
+
+query TTTT
+SELECT CASE WHEN 'a' = 'A' THEN 1 ELSE 0 END, CASE WHEN 'abc' <> 'ABC' THEN 1 ELSE 0 END, CASE WHEN 'a' < 'B' THEN 1 ELSE 0 END, CASE WHEN 'Z' > 'a' THEN 1 ELSE 0 END
+----
+1 0 1 1
+
+query TTTT
+SELECT CASE WHEN 'é' = 'e' THEN 1 ELSE 0 END, CASE WHEN 'Å' = 'a' THEN 1 ELSE 0 END, CASE WHEN 'ß' = 'ss' THEN 1 ELSE 0 END, CASE WHEN 'straße' = 'STRASSE' THEN 1 ELSE 0 END
+----
+1 1 1 1
+
+query TTTT
+SELECT CASE WHEN 'æ' = 'ae' THEN 1 ELSE 0 END, CASE WHEN 'ø' = 'o' THEN 1 ELSE 0 END, CASE WHEN 'ﬁ' = 'fi' THEN 1 ELSE 0 END, CASE WHEN 'Ａ' = 'a' THEN 1 ELSE 0 END
+----
+1 1 1 1
+
+query TTTT
+SELECT CASE WHEN 'ı' = 'i' THEN 1 ELSE 0 END, CASE WHEN 'й' = 'и' THEN 1 ELSE 0 END, CASE WHEN 'þ' = 'th' THEN 1 ELSE 0 END, CASE WHEN '😀' = '😁' THEN 1 ELSE 0 END
+----
+0 0 0 0
+
+# NO PAD: a trailing space is a character.
+query TTT
+SELECT CASE WHEN 'a' = 'a ' THEN 1 ELSE 0 END, CASE WHEN 'a ' > 'a' THEN 1 ELSE 0 END, CASE WHEN '' = ' ' THEN 1 ELSE 0 END
+----
+0 1 0
+
+query TTTT
+SELECT CASE WHEN 'é' < 'f' THEN 1 ELSE 0 END, CASE WHEN 'ä' < 'Z' THEN 1 ELSE 0 END, CASE WHEN 'ß' < 'st' THEN 1 ELSE 0 END, CASE WHEN '1' < 'a' THEN 1 ELSE 0 END
+----
+1 1 1 1
+
+query TTT
+SELECT CASE WHEN 'a' IN ('X', 'A') THEN 1 ELSE 0 END, CASE WHEN 'é' NOT IN ('E') THEN 1 ELSE 0 END, CASE WHEN 'b' BETWEEN 'A' AND 'C' THEN 1 ELSE 0 END
+----
+1 0 1
+
+query TTT
+SELECT NULLIF('a', 'A'), NULLIF('a', 'b'), CASE 'a' WHEN 'A' THEN 'ci' ELSE 'cs' END
+----
+NULL a ci
+
+query TTTTTT
+SELECT STRCMP('a', 'A'), STRCMP('a', 'B'), STRCMP('B', 'a'), STRCMP('é', 'e'), STRCMP('a ', 'a'), STRCMP(NULL, 'a')
+----
+0 -1 1 0 1 NULL
+
+query TTTTTT
+SELECT FIELD('B', 'a', 'b'), FIELD('x', 'a', 'b'), FIELD(NULL, 'a'), FIND_IN_SET('B', 'a,b'), FIND_IN_SET('x', 'a,b'), FIND_IN_SET('a', '')
+----
+2 0 0 2 0 0
+
+query TTTT
+SELECT CASE WHEN BINARY 'abc' = 'ABC' THEN 1 ELSE 0 END, CASE WHEN 'abc' = BINARY 'abc' THEN 1 ELSE 0 END, STRCMP(BINARY 'a', 'A'), CASE WHEN BINARY 'b' > 'A' THEN 1 ELSE 0 END
+----
+0 1 1 1
+
+query TTTT
+SELECT CASE WHEN 'a' = 'A' COLLATE utf8mb4_bin THEN 1 ELSE 0 END, CASE WHEN 'a' COLLATE utf8mb4_0900_as_cs = 'A' THEN 1 ELSE 0 END, CASE WHEN 'é' COLLATE utf8mb4_0900_as_ci = 'e' THEN 1 ELSE 0 END, CASE WHEN 'a' COLLATE utf8mb4_0900_as_ci = 'A' THEN 1 ELSE 0 END
+----
+0 0 0 1
+
+query TT
+SELECT CASE WHEN 'é' COLLATE utf8mb4_0900_ai_ci = 'E' THEN 1 ELSE 0 END, CASE WHEN 'a' IN ('A' COLLATE utf8mb4_bin) THEN 1 ELSE 0 END
+----
+1 0
+
+query T rowsort
+SELECT 'x' UNION SELECT 'X' UNION SELECT 'é' UNION SELECT 'e'
+----
+x
+é
+
+statement ok
+CREATE TABLE words (id INT PRIMARY KEY, w VARCHAR(20), wb VARCHAR(20) COLLATE utf8mb4_bin, ws VARCHAR(20) COLLATE utf8mb4_0900_as_cs)
+
+statement ok
+INSERT INTO words VALUES (1, 'apple', 'apple', 'apple'), (2, 'Apple', 'Apple', 'Apple'), (3, 'APPLE', 'APPLE', 'APPLE'), (4, 'banana', 'banana', 'banana'), (5, 'Éclair', 'Éclair', 'Éclair'), (6, 'eclair', 'eclair', 'eclair'), (7, 'zebra', 'zebra', 'zebra'), (8, 'Zebra', 'Zebra', 'Zebra')
+
+query T
+SELECT id FROM words WHERE w = 'APPLE' ORDER BY id
+----
+1
+2
+3
+
+query T
+SELECT id FROM words WHERE w = 'ECLAIR' ORDER BY id
+----
+5
+6
+
+query T
+SELECT id FROM words WHERE w <> 'apple' ORDER BY id
+----
+4
+5
+6
+7
+8
+
+query T
+SELECT id FROM words WHERE w IN ('BANANA', 'zEbRa') ORDER BY id
+----
+4
+7
+8
+
+query T
+SELECT id FROM words WHERE w > 'B' AND w < 'f' ORDER BY id
+----
+4
+5
+6
+
+query T
+SELECT id FROM words WHERE wb = 'apple' ORDER BY id
+----
+1
+
+query T
+SELECT id FROM words WHERE ws = 'Apple' ORDER BY id
+----
+2
+
+query T
+SELECT id FROM words WHERE wb IN ('Apple', 'zebra') ORDER BY id
+----
+2
+7
+
+query T
+SELECT id FROM words WHERE BINARY w = 'Apple'
+----
+2
+
+query T
+SELECT id FROM words WHERE w COLLATE utf8mb4_bin = 'APPLE'
+----
+3
+
+query T
+SELECT w FROM words ORDER BY w, id
+----
+apple
+Apple
+APPLE
+banana
+Éclair
+eclair
+zebra
+Zebra
+
+query T
+SELECT wb FROM words ORDER BY wb, id
+----
+APPLE
+Apple
+Zebra
+apple
+banana
+eclair
+zebra
+Éclair
+
+query T
+SELECT w FROM words ORDER BY w COLLATE utf8mb4_bin, id
+----
+APPLE
+Apple
+Zebra
+apple
+banana
+eclair
+zebra
+Éclair
+
+query T
+SELECT w FROM words ORDER BY BINARY w DESC, id
+----
+Éclair
+zebra
+eclair
+banana
+apple
+Zebra
+Apple
+APPLE
+
+query TTT
+SELECT w, COUNT(*), MIN(id) FROM words GROUP BY w ORDER BY MIN(id)
+----
+apple 3 1
+banana 1 4
+Éclair 2 5
+zebra 2 7
+
+query TT
+SELECT LOWER(w), COUNT(*) FROM words GROUP BY LOWER(w) ORDER BY MIN(id)
+----
+apple 3
+banana 1
+éclair 2
+zebra 2
+
+query TT
+SELECT COUNT(DISTINCT w), COUNT(DISTINCT wb) FROM words
+----
+4 8
+
+query T
+SELECT COUNT(*) FROM (SELECT DISTINCT w FROM words) t
+----
+4
+
+query TT
+SELECT CASE WHEN MIN(w) = 'APPLE' THEN 1 ELSE 0 END, CASE WHEN MAX(w) = 'ZEBRA' THEN 1 ELSE 0 END FROM words
+----
+1 1
+
+query TT
+SELECT a.id, b.id FROM words a JOIN words b ON a.w = b.w AND a.id < b.id ORDER BY a.id, b.id
+----
+1 2
+1 3
+2 3
+5 6
+7 8
+
+query T
+SELECT COUNT(*) FROM (SELECT w FROM words WHERE id <= 3 UNION SELECT w FROM words WHERE id >= 2) t
+----
+4
+
+statement ok
+CREATE TABLE uq (id INT PRIMARY KEY, name VARCHAR(20), UNIQUE KEY uq_name (name))
+
+statement ok
+INSERT INTO uq VALUES (1, 'Smith')
+
+# MySQL: ERROR 1062: Duplicate entry 'SMITH' for key 'uq.uq_name'
+statement error
+INSERT INTO uq VALUES (2, 'SMITH')
+
+# MySQL: ERROR 1062: Duplicate entry 'smíth' for key 'uq.uq_name'
+statement error
+INSERT INTO uq VALUES (3, 'smíth')
+
+statement ok
+INSERT INTO uq VALUES (4, 'Smith ')
+
+query T
+SELECT id FROM uq WHERE name = 'smith'
+----
+1
+
+query T
+SELECT id FROM uq WHERE name = 'SMITH '
+----
+4
+
+statement ok
+UPDATE uq SET name = 'Jones' WHERE name = 'SMITH'
+
+query TT
+SELECT id, name FROM uq ORDER BY id
+----
+1 Jones
+4 Smith
+
+# MySQL: ERROR 1062: Duplicate entry 'JONES' for key 'uq.uq_name'
+statement error
+INSERT INTO uq VALUES (5, 'JONES')
+
+statement ok
+CREATE TABLE pk (code VARCHAR(10) PRIMARY KEY, n INT)
+
+statement ok
+INSERT INTO pk VALUES ('abc', 1), ('Straße', 2)
+
+# MySQL: ERROR 1062: Duplicate entry 'ABC' for key 'pk.PRIMARY'
+statement error
+INSERT INTO pk VALUES ('ABC', 3)
+
+# MySQL: ERROR 1062: Duplicate entry 'STRASSE' for key 'pk.PRIMARY'
+statement error
+INSERT INTO pk VALUES ('STRASSE', 4)
+
+query TT
+SELECT code, n FROM pk WHERE code = 'ABC'
+----
+abc 1
+
+query TT
+SELECT code, n FROM pk WHERE code = 'strasse'
+----
+Straße 2
+
+query TT
+SELECT code, n FROM pk WHERE code IN ('ABC', 'STRASSE') ORDER BY n
+----
+abc 1
+Straße 2
+
+statement ok
+UPDATE pk SET n = 10 WHERE code = 'ABC'
+
+statement ok
+DELETE FROM pk WHERE code = 'STRASSE'
+
+query TT
+SELECT code, n FROM pk ORDER BY code
+----
+abc 10
+
+statement ok
+CREATE TABLE ix (id INT PRIMARY KEY, email VARCHAR(40), KEY ix_email (email))
+
+statement ok
+INSERT INTO ix VALUES (1, 'Alice@Example.com'), (2, 'bob@example.com')
+
+query TT
+SELECT id, email FROM ix WHERE email = 'alice@example.com'
+----
+1 Alice@Example.com
+
+query T
+SELECT email FROM ix WHERE email = 'BOB@EXAMPLE.COM'
+----
+bob@example.com
+
+query T
+SELECT id FROM ix WHERE email >= 'B' ORDER BY id
+----
+2
+
+statement ok
+CREATE TABLE tb (id INT PRIMARY KEY, name VARCHAR(20), UNIQUE KEY tb_name (name)) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+
+statement ok
+INSERT INTO tb VALUES (1, 'Smith'), (2, 'SMITH')
+
+query T
+SELECT id FROM tb WHERE name = 'smith'
+----
+
+query T
+SELECT id FROM tb WHERE name = 'SMITH'
+----
+2
+
+statement ok
+CREATE TABLE cs (id INT PRIMARY KEY, name VARCHAR(20) COLLATE utf8mb4_bin)
+
+statement ok
+INSERT INTO cs VALUES (1, 'b'), (2, 'B'), (3, 'a'), (4, 'A')
+
+query T
+SELECT name FROM cs ORDER BY name
+----
+A
+B
+a
+b
+
+query T
+SELECT id FROM cs WHERE name > 'Z' ORDER BY id
+----
+1
+3
+
+query T
+SELECT id FROM cs WHERE name BETWEEN 'A' AND 'B' ORDER BY id
+----
+2
+4

@@ -79,6 +79,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - `TINYINT(1)`: Works as standard `TINYINT`
 
+## Collation
+
+Text compares as MySQL 8's default collation, `utf8mb4_0900_ai_ci`: case- and accent-insensitive (`'Smith' = 'SMITH'`, `'é' = 'e'`, `'ß' = 'ss'`) and NO PAD (`'a' <> 'a '`). This applies to `=`, `<>`, `<`, `>`, `IN`, `BETWEEN`, `CASE`, `NULLIF`, `STRCMP`, `FIELD`, `FIND_IN_SET`, `ORDER BY`, `GROUP BY`, `DISTINCT`, `UNION`, joins, `MIN`/`MAX`, and to primary and unique keys of tables created through this dialect: inserting `'SMITH'` next to `'Smith'` fails as a duplicate.
+
+Byte-wise comparison:
+
+- `BINARY x`, `CAST(x AS BINARY)` and `x COLLATE …_bin` / `…_cs` / `binary` make the whole comparison (or `ORDER BY` key) byte-wise; `COLLATE …_as_ci` compares the lowercase text byte-wise (accent-sensitive, case-insensitive).
+- Columns declared `COLLATE …_bin` / `…_cs`, or in a table declared `COLLATE=…_bin` / `…_cs`, compare byte-wise in comparisons, `IN`, `BETWEEN`, `ORDER BY` and `COUNT(DISTINCT …)`, and a primary or unique key over one stays byte-wise.
+- `LIKE` keeps its own rules (see above): case-insensitive unless an operand is marked binary.
+
+Not modelled yet:
+
+- The full Unicode Collation Algorithm: letters and digits order as MySQL does, but punctuation and symbols keep code point order (MySQL sorts all punctuation before digits), and there are no contractions or language-specific rules. Equality follows MySQL for case, accents, compatibility forms (`'ﬁ' = 'fi'`, `'Ａ' = 'a'`) and the common expansions (`ß`, `æ`, `œ`, `ø`, `đ`, `ð`, `ł`, `ħ`).
+- `GROUP BY`, `DISTINCT`, `UNION` and `MIN`/`MAX` on a `_bin` / `_cs` column still fold case (comparisons and joins on it are byte-wise).
+- Accent folding in `LIKE` (`'ÀBC' LIKE 'abc'`), and `LIKE` on a `_bin` / `_cs` column without an explicit marker.
+- Collations given by `ALTER TABLE … ADD/MODIFY COLUMN … COLLATE`, column character sets, and per-column collation metadata beyond "byte-wise or not".
+- Error 1267 (illegal mix of collations) outside `LIKE`.
+- Tables created before this collation support (or through another dialect) keep byte-wise primary and index keys; recreate them to fold their keys.
+- A unique index over a `_bin` / `_cs` column added later with `CREATE UNIQUE INDEX` is refused when the table folds its keys.
+
 ## See Also
 
 - [KiteSQL Documentation](https://docs.rs/kite_sql)

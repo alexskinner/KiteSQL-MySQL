@@ -55,6 +55,7 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Locate::new(2))?;
         registry.register_scalar(Locate::new(3))?;
         registry.register_scalar(Instr::new())?;
+        registry.register_scalar(FindInSet::new())?;
         // POSITION is handled by core evaluator (PR #38), don't register here
         registry.register_scalar(Left::new())?;
         registry.register_scalar(Right::new())?;
@@ -605,6 +606,61 @@ impl ScalarFunctionImpl for Instr {
         } else {
             Ok(DataValue::Int32(0))
         }
+    }
+
+    fn return_type(&self) -> &LogicalType {
+        &LogicalType::Integer
+    }
+
+    fn summary(&self) -> &FunctionSummary {
+        &self.summary
+    }
+
+    fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
+        None
+    }
+}
+
+/// `FIND_IN_SET(str, strlist)`: the 1-based position of `str` among the comma-separated
+/// items of `strlist`, compared by the statement's collation; 0 when absent, NULL with a NULL
+/// argument.
+#[derive(Debug)]
+pub struct FindInSet {
+    summary: FunctionSummary,
+}
+
+impl FindInSet {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            summary: FunctionSummary {
+                name: "find_in_set".into(),
+                arg_types: vec![TEXT, TEXT],
+                persistence: PersistencePolicy::Durable,
+            },
+        })
+    }
+}
+
+impl ScalarFunctionImpl for FindInSet {
+    fn eval(
+        &self,
+        args: &[ExprRef],
+        arena: &(dyn MetaArena + '_),
+        tuple: Option<&dyn Input>,
+    ) -> Result<DataValue, DatabaseError> {
+        let (Some(needle), Some(list)) = (
+            eval_text(args[0], arena, tuple)?,
+            eval_text(args[1], arena, tuple)?,
+        ) else {
+            return Ok(DataValue::Null);
+        };
+        if list.is_empty() {
+            return Ok(DataValue::Int32(0));
+        }
+        let position = list
+            .split(',')
+            .position(|item| kite_sql::types::collation::text_eq(item, &needle));
+        Ok(DataValue::Int32(position.map_or(0, |i| i as i32 + 1)))
     }
 
     fn return_type(&self) -> &LogicalType {

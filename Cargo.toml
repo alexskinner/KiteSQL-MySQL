@@ -16,6 +16,7 @@ sqlparser = { version = "0.61", features = ["visitor"] }
 ordered-float = "4.6"
 uuid = { version = "1.10", features = ["v4"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
+icu_normalizer = { version = "2.4", default-features = false, features = ["compiled_data"] }
 
 [dev-dependencies]
 kite_sql = { path = "..", default-features = false, features = ["time", "macros", "parser", "lmdb", "spill", "decimal", "orm", "copy"] }

@@ -37,6 +37,7 @@
 //! ```
 
 pub mod auto_increment;
+pub mod collation;
 pub mod functions;
 pub use functions::MySqlFunctions;
 
@@ -46,10 +47,14 @@ use kite_sql::diagnostics::{
 use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::BinaryOperator;
+use kite_sql::types::collation::TextCollation;
 use kite_sql::types::value::DataValue;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{
-    visit_expressions_mut, DataType, ExactNumberInfo, Expr, ObjectNamePart, Statement, Value,
+    visit_expressions_mut, BinaryOperator as SqlBinaryOperator, CastKind, ColumnOption,
+    ColumnOptionDef, CreateTableOptions, DataType, ExactNumberInfo, Expr, FunctionArg,
+    FunctionArgExpr, FunctionArguments, ObjectName, ObjectNamePart, OrderByKind, Query, SqlOption,
+    Statement, Value, VisitMut, VisitorMut,
 };
 use sqlparser::dialect::{Dialect as SqlParserDialect, MySqlDialect as SqlParserMySqlDialect};
 use std::convert::TryFrom;
@@ -248,13 +253,26 @@ impl SqlDialect for MySqlDialect {
             associate_integer_divide(expr);
             ControlFlow::<()>::Continue(())
         });
+        apply_table_collation(stmt);
         let mut err = None;
+        let _ = visit_expressions_mut(stmt, |expr| {
+            associate_binary_operator(expr);
+            if let Err(e) = expand_string_comparisons(expr) {
+                err = Some(e);
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
         let _ = visit_expressions_mut(stmt, |expr| {
             rewrite_integer_arithmetic(expr);
             if let Err(e) = rewrite_like(expr) {
                 err = Some(e);
                 return ControlFlow::Break(());
             }
+            rewrite_comparison(expr);
             if let Expr::Cast {
                 data_type, expr, ..
             } = expr
@@ -266,7 +284,28 @@ impl SqlDialect for MySqlDialect {
             }
             ControlFlow::Continue(())
         });
-        err.map_or(Ok(()), Err)
+        if let Some(e) = err {
+            return Err(e);
+        }
+        let _ = stmt.visit(&mut OrderByCollation);
+        // The engine has no COLLATE expression: what it decides is applied above.
+        let _ = visit_expressions_mut(stmt, |expr| {
+            if let Expr::Collate { expr: inner, .. } = expr {
+                *expr = std::mem::replace(inner.as_mut(), Expr::value(Value::Null));
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        Ok(())
+    }
+
+    /// Text compares as MySQL 8's default collation, `utf8mb4_0900_ai_ci`, does.
+    fn text_collation(&self) -> Option<TextCollation> {
+        Some(collation::utf8mb4_0900_ai_ci())
+    }
+
+    /// `_bin` and `_cs` collations, and `binary`, compare byte-wise.
+    fn is_binary_collation(&self, name: &str) -> bool {
+        collation::is_binary_collation(name)
     }
 
     /// MySQL's default sql_mode (STRICT_TRANS_TABLES, ERROR_FOR_DIVISION_BY_ZERO): queries
@@ -337,6 +376,15 @@ impl SqlDialect for MySqlDialect {
         diagnostic.code = code;
         diagnostic.message = message;
         Some(diagnostic)
+    }
+
+    /// `CAST(x AS BINARY)` and the `BINARY x` operator: the bytes of `x` (a `BINARY` column
+    /// without a length becomes variable-length bytes).
+    fn map_data_type(&self, data_type: &DataType) -> Option<Result<LogicalType, DatabaseError>> {
+        match data_type {
+            DataType::Binary(None) => Some(Ok(LogicalType::Varbinary(None))),
+            _ => None,
+        }
     }
 
     fn map_column_type(
@@ -612,6 +660,19 @@ fn rewrite_like(expr: &mut Expr) -> Result<(), DatabaseError> {
         }
     }
     if case_sensitive {
+        // A case-sensitive text LIKE: the engine has no LIKE over bytes.
+        for operand in [&mut *lhs, &mut *pattern] {
+            if let Expr::Cast {
+                data_type,
+                expr: inner,
+                ..
+            } = operand.as_mut()
+            {
+                if is_binary_type(data_type) {
+                    *operand = inner.clone();
+                }
+            }
+        }
         return Ok(());
     }
     *expr = Expr::ILike {
@@ -622,6 +683,326 @@ fn rewrite_like(expr: &mut Expr) -> Result<(), DatabaseError> {
         escape_char: escape_char.clone(),
     };
     Ok(())
+}
+
+/// How an operand asks text to compare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TextCompare {
+    /// The default collation: case- and accent-insensitive.
+    Default,
+    /// `COLLATE …_as_ci`: accent-sensitive, case-insensitive.
+    AccentSensitive,
+    /// `BINARY`, `CAST(… AS BINARY)`, `COLLATE …_bin` / `…_cs` / `binary`.
+    Binary,
+}
+
+fn text_compare(expr: &Expr) -> TextCompare {
+    match expr {
+        Expr::Collate {
+            collation: name, ..
+        } => {
+            let name = name.to_string();
+            if collation::is_binary_collation(&name) {
+                TextCompare::Binary
+            } else if collation::is_accent_sensitive_collation(&name) {
+                TextCompare::AccentSensitive
+            } else {
+                TextCompare::Default
+            }
+        }
+        Expr::Cast { data_type, .. } if is_binary_type(data_type) => TextCompare::Binary,
+        Expr::Nested(inner) => text_compare(inner),
+        _ => TextCompare::Default,
+    }
+}
+
+fn is_binary_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Binary(_) | DataType::Varbinary(_) | DataType::Blob(_)
+    )
+}
+
+fn cast_binary(expr: Expr) -> Expr {
+    Expr::Cast {
+        kind: CastKind::Cast,
+        expr: Box::new(expr),
+        data_type: DataType::Varbinary(None),
+        array: false,
+        format: None,
+    }
+}
+
+fn without_collate(expr: Expr) -> Expr {
+    match expr {
+        Expr::Collate { expr, .. } => *expr,
+        Expr::Nested(inner) if matches!(inner.as_ref(), Expr::Collate { .. }) => {
+            without_collate(*inner)
+        }
+        expr => expr,
+    }
+}
+
+/// Makes the operands of one comparison compare as the strictest of them asks: with a
+/// `BINARY` or `_bin` / `_cs` operand all of them compare as bytes, with an `_as_ci` one as
+/// their lowercase bytes. A collation names one side but applies to the whole comparison.
+fn compare_operands(operands: &mut [&mut Expr]) {
+    let compare = operands
+        .iter()
+        .map(|expr| text_compare(expr))
+        .max()
+        .unwrap_or(TextCompare::Default);
+    if compare == TextCompare::Default {
+        return;
+    }
+    for operand in operands.iter_mut() {
+        let expr = without_collate(std::mem::replace(*operand, Expr::value(Value::Null)));
+        **operand = match compare {
+            TextCompare::Binary if text_compare(&expr) == TextCompare::Binary => expr,
+            TextCompare::Binary => cast_binary(expr),
+            _ => cast_binary(lower(expr)),
+        };
+    }
+}
+
+fn lower(expr: Expr) -> Expr {
+    Expr::Function(sqlparser::ast::Function {
+        name: ObjectName::from(vec![sqlparser::ast::Ident::new("LOWER")]),
+        uses_odbc_syntax: false,
+        parameters: FunctionArguments::None,
+        args: FunctionArguments::List(sqlparser::ast::FunctionArgumentList {
+            duplicate_treatment: None,
+            args: vec![FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))],
+            clauses: vec![],
+        }),
+        filter: None,
+        null_treatment: None,
+        over: None,
+        within_group: vec![],
+    })
+}
+
+/// Comparisons (`=`, `<>`, `<`, `<=>`, …, `IN`, `BETWEEN`) with an explicit binary or
+/// case-sensitive operand compare byte-wise; the rest compare by the default collation.
+fn rewrite_comparison(expr: &mut Expr) {
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op:
+                SqlBinaryOperator::Eq
+                | SqlBinaryOperator::NotEq
+                | SqlBinaryOperator::Lt
+                | SqlBinaryOperator::LtEq
+                | SqlBinaryOperator::Gt
+                | SqlBinaryOperator::GtEq
+                | SqlBinaryOperator::Spaceship,
+            right,
+        } => {
+            compare_operands(&mut [left.as_mut(), right.as_mut()]);
+        }
+        Expr::InList { expr, list, .. } => {
+            let mut operands = vec![expr.as_mut()];
+            operands.extend(list.iter_mut());
+            compare_operands(&mut operands);
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            compare_operands(&mut [expr.as_mut(), low.as_mut(), high.as_mut()]);
+        }
+        _ => {}
+    }
+}
+
+/// `BINARY a = b` parses as `CAST((a = b) AS BINARY)`; MySQL's `BINARY` binds tighter than
+/// comparisons, `LIKE`, `IN`, `BETWEEN`, `IS`, `AND` and `OR`.
+fn associate_binary_operator(expr: &mut Expr) {
+    let Expr::Cast {
+        kind: CastKind::Cast,
+        expr: inner,
+        data_type: DataType::Binary(None),
+        array: false,
+        format: None,
+    } = expr
+    else {
+        return;
+    };
+    let binds_looser = match inner.as_ref() {
+        Expr::BinaryOp { op, .. } => matches!(
+            op,
+            SqlBinaryOperator::Eq
+                | SqlBinaryOperator::NotEq
+                | SqlBinaryOperator::Lt
+                | SqlBinaryOperator::LtEq
+                | SqlBinaryOperator::Gt
+                | SqlBinaryOperator::GtEq
+                | SqlBinaryOperator::Spaceship
+                | SqlBinaryOperator::And
+                | SqlBinaryOperator::Or
+                | SqlBinaryOperator::Xor
+        ),
+        Expr::Like { .. }
+        | Expr::ILike { .. }
+        | Expr::InList { .. }
+        | Expr::Between { .. }
+        | Expr::IsNull(_)
+        | Expr::IsNotNull(_) => true,
+        _ => false,
+    };
+    if !binds_looser {
+        return;
+    }
+    let mut inner = std::mem::replace(inner.as_mut(), Expr::value(Value::Null));
+    let operand = match &mut inner {
+        Expr::BinaryOp { left, .. } => left,
+        Expr::Like { expr, .. }
+        | Expr::ILike { expr, .. }
+        | Expr::InList { expr, .. }
+        | Expr::Between { expr, .. }
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) => expr,
+        _ => unreachable!(),
+    };
+    let mut cast = cast_binary(std::mem::replace(
+        operand.as_mut(),
+        Expr::value(Value::Null),
+    ));
+    associate_binary_operator(&mut cast);
+    **operand = cast;
+    *expr = inner;
+}
+
+/// `STRCMP(a, b)` and `FIELD(s, a, b, …)` become comparisons, so they compare by the
+/// collation and honour `BINARY` operands like `=` and `<` do.
+fn expand_string_comparisons(expr: &mut Expr) -> Result<(), DatabaseError> {
+    let Expr::Function(function) = expr else {
+        return Ok(());
+    };
+    if function.over.is_some() || function.name.0.len() != 1 {
+        return Ok(());
+    }
+    let name = function.name.to_string().to_ascii_lowercase();
+    if name != "strcmp" && name != "field" {
+        return Ok(());
+    }
+    let FunctionArguments::List(list) = &function.args else {
+        return Ok(());
+    };
+    let args = list
+        .args
+        .iter()
+        .map(|arg| match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Some(expr.to_string()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(args) = args else {
+        return Ok(());
+    };
+    let sql = match (name.as_str(), args.as_slice()) {
+        ("strcmp", [a, b]) => format!(
+            "CASE WHEN ({a}) = ({b}) THEN 0 WHEN ({a}) < ({b}) THEN -1 WHEN ({a}) > ({b}) THEN 1 END"
+        ),
+        ("field", [s, rest @ ..]) if !rest.is_empty() => {
+            let mut sql = String::from("CASE");
+            for (i, arg) in rest.iter().enumerate() {
+                sql.push_str(&format!(" WHEN ({s}) = ({arg}) THEN {}", i + 1));
+            }
+            sql.push_str(" ELSE 0 END");
+            sql
+        }
+        _ => {
+            return Err(DatabaseError::InvalidValue(format!(
+                "Incorrect parameter count in the call to native function '{}'",
+                function.name
+            )))
+        }
+    };
+    let mut expanded = sqlparser::parser::Parser::new(&SqlParserMySqlDialect {})
+        .try_with_sql(&sql)
+        .and_then(|mut parser| parser.parse_expr())
+        .map_err(|e| DatabaseError::InvalidValue(e.to_string()))?;
+    let _ = visit_expressions_mut(&mut expanded, |expr| {
+        associate_binary_operator(expr);
+        ControlFlow::<()>::Continue(())
+    });
+    *expr = Expr::Nested(Box::new(expanded));
+    Ok(())
+}
+
+/// `ORDER BY x COLLATE …_bin` (or `BINARY x`) sorts by bytes; `…_as_ci` by lowercase bytes.
+struct OrderByCollation;
+
+impl VisitorMut for OrderByCollation {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<()> {
+        if let Some(order_by) = &mut query.order_by {
+            if let OrderByKind::Expressions(exprs) = &mut order_by.kind {
+                for order_by_expr in exprs {
+                    compare_operands(&mut [&mut order_by_expr.expr]);
+                }
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// A table-level `COLLATE=…_bin` / `…_cs` (or `DEFAULT COLLATE …`) applies to every text
+/// column declared without its own collation.
+fn apply_table_collation(stmt: &mut Statement) {
+    let Statement::CreateTable(create) = stmt else {
+        return;
+    };
+    let options = match &create.table_options {
+        CreateTableOptions::Plain(options)
+        | CreateTableOptions::With(options)
+        | CreateTableOptions::Options(options)
+        | CreateTableOptions::TableProperties(options) => options,
+        CreateTableOptions::None => return,
+    };
+    let collation = options.iter().find_map(|option| match option {
+        SqlOption::KeyValue { key, value } => {
+            let key = key.value.to_ascii_lowercase();
+            (key == "collate" || key == "default collate").then(|| value.to_string())
+        }
+        _ => None,
+    });
+    let Some(collation) = collation else {
+        return;
+    };
+    if !collation::is_binary_collation(&collation) {
+        return;
+    }
+    let collation = collation.trim_matches(|c| c == '`' || c == '"' || c == '\'');
+    for column in &mut create.columns {
+        let is_text = matches!(
+            column.data_type,
+            DataType::Char(_)
+                | DataType::Character(_)
+                | DataType::Varchar(_)
+                | DataType::CharVarying(_)
+                | DataType::CharacterVarying(_)
+                | DataType::Nvarchar(_)
+                | DataType::Text
+                | DataType::TinyText
+                | DataType::MediumText
+                | DataType::LongText
+                | DataType::String(_)
+        );
+        let has_collation = column
+            .options
+            .iter()
+            .any(|option| matches!(option.option, ColumnOption::Collation(_)));
+        if is_text && !has_collation {
+            column.options.push(ColumnOptionDef {
+                name: None,
+                option: ColumnOption::Collation(ObjectName::from(vec![
+                    sqlparser::ast::Ident::new(collation),
+                ])),
+            });
+        }
+    }
 }
 
 fn is_case_sensitive(expr: &Expr) -> bool {

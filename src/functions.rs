@@ -75,6 +75,9 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Round::new_variadic())?;
         registry.register_scalar(IntegerDivide::new())?;
 
+        // ISNULL(expr): 1 when expr is NULL, else 0 (an integer, never NULL).
+        registry.register_scalar(IsNull::new())?;
+
         // LAST_INSERT_ID() and LAST_INSERT_ID(expr); a host that registered its own keeps it.
         for with_arg in [false, true] {
             match registry.register_scalar(crate::auto_increment::LastInsertId::new(with_arg)) {
@@ -2002,6 +2005,59 @@ impl ScalarFunctionImpl for IntegerDivide {
 
     fn summary(&self) -> &FunctionSummary {
         &self.summary
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true
+    }
+}
+
+/// `ISNULL(expr)`: MySQL's NULL test function. Returns the integer 1 when `expr` is NULL and 0
+/// otherwise; the result itself is never NULL. Any argument type is accepted.
+#[derive(Debug)]
+pub struct IsNull {
+    summary: FunctionSummary,
+}
+
+impl IsNull {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            summary: FunctionSummary {
+                name: "isnull".into(),
+                arg_types: vec![TEXT],
+                persistence: PersistencePolicy::Durable,
+            },
+        })
+    }
+}
+
+impl ScalarFunctionImpl for IsNull {
+    fn eval(
+        &self,
+        args: &[ExprRef],
+        arena: &(dyn MetaArena + '_),
+        tuple: Option<&dyn Input>,
+    ) -> Result<DataValue, DatabaseError> {
+        if args.len() != 1 {
+            return Err(DatabaseError::InvalidValue(format!(
+                "ISNULL expects 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let value = arena.expression(args[0]).eval(arena, tuple)?;
+        Ok(DataValue::Int64(i64::from(value.is_null())))
+    }
+
+    fn return_type(&self) -> &LogicalType {
+        &LogicalType::Bigint
+    }
+
+    fn summary(&self) -> &FunctionSummary {
+        &self.summary
+    }
+
+    fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
+        None
     }
 
     fn accepts_any_args(&self) -> bool {

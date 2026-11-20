@@ -39,6 +39,7 @@
 pub mod auto_increment;
 pub mod collation;
 pub mod functions;
+mod truthiness;
 pub use functions::MySqlFunctions;
 
 use kite_sql::diagnostics::{
@@ -295,6 +296,7 @@ impl SqlDialect for MySqlDialect {
             }
             ControlFlow::<()>::Continue(())
         });
+        truthiness::rewrite(stmt);
         Ok(())
     }
 

@@ -690,3 +690,55 @@ fn locate_empty_needle_and_start_bounds() -> Result<(), DatabaseError> {
     );
     Ok(())
 }
+
+#[test]
+fn isnull_function() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().expect("temp dir");
+    let mut db = database(&dir)?;
+    for (sql, expected) in [
+        ("SELECT ISNULL(NULL)", 1),
+        ("SELECT ISNULL(0)", 0),
+        ("SELECT ISNULL('')", 0),
+        ("SELECT ISNULL(CONCAT('a', NULL))", 1),
+        ("SELECT ISNULL(ISNULL(NULL))", 0),
+        ("SELECT ISNULL(NULL) + 1", 2),
+    ] {
+        assert_eq!(scalar(&db, sql)?, DataValue::Int64(expected), "{sql}");
+    }
+    assert!(db.run("SELECT ISNULL()").is_err());
+    assert!(db.run("SELECT ISNULL(1, 2)").is_err());
+
+    db.ddl("CREATE TABLE users (id INT PRIMARY KEY, auth_key VARCHAR(40), key_in_use BOOLEAN)")?;
+    db.run(
+        "INSERT INTO users VALUES (1, NULL, TRUE), (2, 'k', TRUE), (3, 'k', FALSE), (4, 'k', NULL)",
+    )?
+    .done()?;
+    // A number is a condition in IF() and AND, as a CMS user listing selects it.
+    assert_eq!(
+        rows(
+            &db,
+            "SELECT id, IF(ISNULL(auth_key), 0, 1) AND key_in_use AS has_key FROM users ORDER BY id"
+        )?,
+        vec![
+            vec![DataValue::Int32(1), DataValue::Boolean(false)],
+            vec![DataValue::Int32(2), DataValue::Boolean(true)],
+            vec![DataValue::Int32(3), DataValue::Boolean(false)],
+            vec![DataValue::Int32(4), DataValue::Null],
+        ]
+    );
+    assert_eq!(
+        rows(
+            &db,
+            "SELECT id FROM users WHERE ISNULL(auth_key) ORDER BY id"
+        )?,
+        vec![vec![DataValue::Int32(1)]]
+    );
+    assert_eq!(
+        rows(
+            &db,
+            "SELECT id FROM users WHERE NOT ISNULL(auth_key) AND key_in_use ORDER BY id"
+        )?,
+        vec![vec![DataValue::Int32(2)]]
+    );
+    Ok(())
+}

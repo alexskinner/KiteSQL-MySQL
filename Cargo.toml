@@ -2,16 +2,18 @@
 name = "kite_sql_mysql"
 version = "0.7.0"
 edition = "2021"
-authors = ["Kould <kould2333@gmail.com>", "Xwg <loloxwg@gmail.com>"]
+authors = ["Alex Skinner"]
 description = "MySQL dialect support for KiteSQL"
-documentation = "https://docs.rs/kite_sql_mysql/latest/kite_sql_mysql/"
+documentation = "https://github.com/alexskinner/KiteSQL-MySQL"
 license = "Apache-2.0"
-repository = "https://github.com/KipData/KiteSQL"
+repository = "https://github.com/alexskinner/KiteSQL-MySQL"
 keywords = ["sql", "mysql", "database"]
 categories = ["development-tools", "database"]
 
 [dependencies]
-kite_sql = { path = "..", default-features = false, features = ["parser", "decimal"] }
+# Pinned to cursor/dual-mode-tests-0fca branch which contains the dialect hooks
+# and test infrastructure this crate depends on.
+kite_sql = { git = "https://github.com/alexskinner/KiteSQL", rev = "806503632a84aecd15bbc5d31723b125671ee224", default-features = false, features = ["parser", "decimal"] }
 sqlparser = { version = "0.61", features = ["visitor"] }
 ordered-float = "4.6"
 uuid = { version = "1.10", features = ["v4"] }
@@ -19,5 +21,7 @@ rust_decimal = { version = "1", default-features = false, features = ["std"] }
 icu_normalizer = { version = "2.4", default-features = false, features = ["compiled_data"] }
 
 [dev-dependencies]
-kite_sql = { path = "..", default-features = false, features = ["time", "macros", "parser", "lmdb", "spill", "decimal", "orm", "copy"] }
+# Pinned to cursor/dual-mode-tests-0fca branch which contains the dialect hooks
+# and test infrastructure this crate depends on.
+kite_sql = { git = "https://github.com/alexskinner/KiteSQL", rev = "806503632a84aecd15bbc5d31723b125671ee224", default-features = false, features = ["time", "macros", "parser", "lmdb", "spill", "decimal", "orm", "copy"] }
 tempfile = "3.10"

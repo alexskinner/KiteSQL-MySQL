@@ -1,0 +1,9 @@
+KiteSQL-MySQL
+
+This software builds upon KiteSQL, which is licensed under the Apache License 2.0.
+KiteSQL is Copyright (c) 2024 KipData and contributors.
+
+Original KiteSQL repository: https://github.com/KipData/KiteSQL
+
+The MySQL dialect implementation in this repository is an independent extension
+that registers MySQL-specific functionality through KiteSQL's dialect hooks.

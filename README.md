@@ -1,40 +1,26 @@
 # kite_sql_mysql
 
-MySQL dialect support for [KiteSQL](https://github.com/KipData/KiteSQL).
+MySQL dialect support for [KiteSQL](https://github.com/KipData/KiteSQL)[^trademark].
 
-## Features
+[^trademark]: See the [Trademark Notice](#trademark-notice) section below.
 
-This crate provides MySQL-specific functionality for KiteSQL:
+## Overview
 
-- **MySQL Dialect**: Full MySQL SQL dialect support via sqlparser
-- **MySQL Type Mappings**:
-  - `TINYTEXT`, `MEDIUMTEXT`, `LONGTEXT` → `VARCHAR(None)`
-  - `BIT(1)` → `BOOLEAN`
-  - `BIT(n)` (n > 1) → `UBIGINT`
-  - `SERIAL` → `UBIGINT NOT NULL AUTO_INCREMENT UNIQUE`
-- **AUTO_INCREMENT**: columns and the `AUTO_INCREMENT = n` table option, on the core identity
-  column; an explicit 0 generates like NULL; `LAST_INSERT_ID()` / `LAST_INSERT_ID(expr)`
-  - `TINYINT(1)` works as expected
-- **Exact-value arithmetic** as in MySQL 8:
-  - A number with a decimal point and no exponent (`0.1`, `.5`, `2.50`) is an exact `DECIMAL`, so `0.1 + 0.2 = 0.3`; with an exponent (`1e2`) it stays `DOUBLE`. Integers above `BIGINT` up to 18446744073709551615 are `BIGINT UNSIGNED`.
-  - `/` on exact values gives `DECIMAL` with the dividend's scale plus `div_precision_increment` (4): `7 / 2 = 3.5000`, `1.0 / 3 = 0.33333`.
-  - `*` adds the operand scales (`1.10 * 2.5 = 2.750`); `+`, `-` and `%` keep the larger one. `%` and `MOD()` take the dividend's sign.
-  - `DIV` is integer division, truncating toward zero, with the precedence of `*` and `/`.
-  - Division or modulo by zero gives `NULL` with warning 1365.
-  - Limits: values hold up to 28 significant digits (longer literals are read as `DOUBLE`); MySQL keeps division intermediates truncated at nine decimals, here a chain is exact and rounded once at the end, so results differ in the last digit for chains like `2 / 3 * 1000000000`.
-- **Easy Integration**: Extension trait for `DataBaseBuilder`
+This crate provides MySQL-specific functionality for KiteSQL through its dialect registration hooks. It enables KiteSQL to parse and execute MySQL-specific SQL syntax, type mappings, functions, and collation rules.
 
-## Usage
+## Installation
 
-Add both `kite_sql` and `kite_sql_mysql` to your dependencies:
+Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kite_sql = "0.7"
-kite_sql_mysql = "0.7"
+kite_sql = { git = "https://github.com/alexskinner/KiteSQL", rev = "806503632a84aecd15bbc5d31723b125671ee224" }
+kite_sql_mysql = { git = "https://github.com/alexskinner/KiteSQL-MySQL" }
 ```
 
-Then use the `with_mysql()` extension method:
+## Usage
+
+Use the `with_mysql()` extension method to register the MySQL dialect with your database:
 
 ```rust
 use kite_sql::db::DataBaseBuilder;
@@ -45,65 +31,119 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_mysql()?
         .build_in_memory()?;
 
-    // Now you can use MySQL-specific types like MEDIUMTEXT
-    database.ddl("CREATE TABLE users (id INT PRIMARY KEY, bio MEDIUMTEXT)")?;
-    database.run("INSERT INTO users VALUES (1, 'Long biography text...')")?.done()?;
+    // Now you can use MySQL-specific types and syntax
+    database.ddl("CREATE TABLE users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100),
+        bio MEDIUMTEXT
+    )")?;
+    
+    database.run("INSERT INTO users (name, bio) VALUES ('Alice', 'Software developer')")?
+        .done()?;
     
     let mut result = database.run("SELECT * FROM users WHERE id = 1")?;
-    let tuple = result.next_tuple(|_, tuple| tuple.clone())?.expect("expected a row");
-    println!("{:?}", tuple);
+    if let Some(tuple) = result.next_tuple(|_, tuple| tuple.clone())? {
+        println!("{:?}", tuple);
+    }
     result.done()?;
 
     Ok(())
 }
 ```
 
-## MySQL Type Support
+## Features
 
-### Text Types
+### MySQL Type Mappings
 
-- `TINYTEXT`: Maps to `VARCHAR` without length limit
-- `MEDIUMTEXT`: Maps to `VARCHAR` without length limit  
-- `LONGTEXT`: Maps to `VARCHAR` without length limit
+- **Text Types**: `TINYTEXT`, `MEDIUMTEXT`, `LONGTEXT` → `VARCHAR` without length limit
+- **Bit Types**: 
+  - `BIT(1)` → `BOOLEAN`
+  - `BIT(n)` (n > 1) → `UBIGINT`
+- **Serial Type**: `SERIAL` → `UBIGINT NOT NULL AUTO_INCREMENT UNIQUE`
+- **Integer Display Width**: `TINYINT(1)` and other display widths work as expected
 
-### Bit Types
+### AUTO_INCREMENT and LAST_INSERT_ID()
 
-- `BIT(1)`: Maps to `BOOLEAN`
-- `BIT(n)` where n > 1: Maps to `UBIGINT`
+Identity columns with `AUTO_INCREMENT` are supported, including:
+- The `AUTO_INCREMENT = n` table option
+- Explicit 0 values generate new IDs like NULL
+- `LAST_INSERT_ID()` returns the last generated ID
+- `LAST_INSERT_ID(expr)` sets and returns a value
 
-### Serial Type
+### Exact-Value Arithmetic (MySQL 8 Compatibility)
 
-- `SERIAL`: Maps to `UBIGINT NOT NULL AUTO_INCREMENT UNIQUE`
+- **Exact Decimal Literals**: Numbers with a decimal point and no exponent (`0.1`, `.5`, `2.50`) are treated as exact `DECIMAL` values, so `0.1 + 0.2 = 0.3` exactly
+- **Division**: `/` on exact values produces `DECIMAL` with scale = dividend scale + 4, so `7 / 2 = 3.5000` and `1.0 / 3 = 0.33333`
+- **Arithmetic Operations**:
+  - `*` adds operand scales (`1.10 * 2.5 = 2.750`)
+  - `+`, `-`, `%` keep the larger scale
+  - `%` and `MOD()` take the dividend's sign
+- **Integer Division**: `DIV` performs integer division, truncating toward zero, with the precedence of `*` and `/`
+- **Division by Zero**: Returns `NULL` with warning code 1365
+- **Precision Limits**: Values hold up to 28 significant digits
 
-### Integer Types
+### MySQL Collation (utf8mb4_0900_ai_ci)
 
-- `TINYINT(1)`: Works as standard `TINYINT`
+Text comparison follows MySQL 8's default collation: case- and accent-insensitive, NO PAD:
+- `'Smith' = 'SMITH'`, `'é' = 'e'`, `'ß' = 'ss'`
+- `'a' <> 'a '` (trailing spaces matter)
 
-## Collation
+Applies to: `=`, `<>`, `<`, `>`, `IN`, `BETWEEN`, `CASE`, `NULLIF`, `STRCMP`, `FIELD`, `FIND_IN_SET`, `ORDER BY`, `GROUP BY`, `DISTINCT`, `UNION`, joins, `MIN`/`MAX`, and to primary and unique keys.
 
-Text compares as MySQL 8's default collation, `utf8mb4_0900_ai_ci`: case- and accent-insensitive (`'Smith' = 'SMITH'`, `'é' = 'e'`, `'ß' = 'ss'`) and NO PAD (`'a' <> 'a '`). This applies to `=`, `<>`, `<`, `>`, `IN`, `BETWEEN`, `CASE`, `NULLIF`, `STRCMP`, `FIELD`, `FIND_IN_SET`, `ORDER BY`, `GROUP BY`, `DISTINCT`, `UNION`, joins, `MIN`/`MAX`, and to primary and unique keys of tables created through this dialect: inserting `'SMITH'` next to `'Smith'` fails as a duplicate.
+**Byte-wise comparison** can be forced with:
+- `BINARY x`, `CAST(x AS BINARY)`
+- `COLLATE …_bin`, `…_cs`, or `binary`
+- Columns declared with these collations
 
-Byte-wise comparison:
+**LIKE** is case-insensitive by default unless an operand is marked binary, and supports:
+- `ESCAPE` clause for custom escape characters
+- Standard `%` and `_` wildcards
 
-- `BINARY x`, `CAST(x AS BINARY)` and `x COLLATE …_bin` / `…_cs` / `binary` make the whole comparison (or `ORDER BY` key) byte-wise; `COLLATE …_as_ci` compares the lowercase text byte-wise (accent-sensitive, case-insensitive).
-- Columns declared `COLLATE …_bin` / `…_cs`, or in a table declared `COLLATE=…_bin` / `…_cs`, compare byte-wise in comparisons, `IN`, `BETWEEN`, `ORDER BY` and `COUNT(DISTINCT …)`, and a primary or unique key over one stays byte-wise.
-- `LIKE` keeps its own rules (see above): case-insensitive unless an operand is marked binary.
+### MySQL Functions
 
-Not modelled yet:
+Includes MySQL-specific implementations of:
+- String functions: `REPLACE`, `CONCAT`, `SUBSTRING`, `LENGTH`, and others
+- Aggregate functions: `GROUP_CONCAT` with `ORDER BY` and `SEPARATOR` support
+- Conditional functions: `ISNULL()`, `IFNULL()`, `IF()`
+- Comparison functions: `GREATEST`, `LEAST` with MySQL type compatibility
 
-- The full Unicode Collation Algorithm: letters and digits order as MySQL does, but punctuation and symbols keep code point order (MySQL sorts all punctuation before digits), and there are no contractions or language-specific rules. Equality follows MySQL for case, accents, compatibility forms (`'ﬁ' = 'fi'`, `'Ａ' = 'a'`) and the common expansions (`ß`, `æ`, `œ`, `ø`, `đ`, `ð`, `ł`, `ħ`).
-- `GROUP BY`, `DISTINCT`, `UNION` and `MIN`/`MAX` on a `_bin` / `_cs` column still fold case (comparisons and joins on it are byte-wise).
-- Accent folding in `LIKE` (`'ÀBC' LIKE 'abc'`), and `LIKE` on a `_bin` / `_cs` column without an explicit marker.
-- Collations given by `ALTER TABLE … ADD/MODIFY COLUMN … COLLATE`, column character sets, and per-column collation metadata beyond "byte-wise or not".
-- Error 1267 (illegal mix of collations) outside `LIKE`.
-- Tables created before this collation support (or through another dialect) keep byte-wise primary and index keys; recreate them to fold their keys.
-- A unique index over a `_bin` / `_cs` column added later with `CREATE UNIQUE INDEX` is refused when the table folds its keys.
+### NULL Ordering
+
+Results order NULLs as MySQL does: NULLs first when ascending, NULLs last when descending.
+
+### Warning Codes
+
+Division by zero and numeric truncation generate MySQL-compatible warning codes (1365).
+
+### Type System Compatibility
+
+Proper type comparison rules for:
+- Boolean values
+- Signed vs unsigned integers
+- Temporal types
+- Decimal precision and scale
+
+## Limitations
+
+Not yet modeled:
+- Full Unicode Collation Algorithm for punctuation/symbol ordering
+- Some collation edge cases in `GROUP BY`, `DISTINCT`, `UNION` on `_bin`/`_cs` columns
+- Accent folding in `LIKE`
+- Per-column collation metadata beyond "byte-wise or not"
+- Error 1267 (illegal mix of collations) outside `LIKE`
 
 ## See Also
 
-- [KiteSQL Documentation](https://docs.rs/kite_sql)
-- [Writing Custom Dialects](../docs/features.md#sql-dialects)
+- [KiteSQL](https://github.com/KipData/KiteSQL)
+- [KiteSQL API documentation](https://docs.rs/kite_sql)
+- [SQL dialects in KiteSQL, including writing custom dialects](https://github.com/alexskinner/KiteSQL/blob/main/docs/features.md#sql-dialects)
+
+## Trademark Notice
+
+**MySQL is a registered trademark of Oracle Corporation and/or its affiliates.** KiteSQL-MySQL is an independent open source project and is not affiliated with, sponsored by, or endorsed by Oracle Corporation. The name "MySQL" is used only to describe the SQL dialect and syntax this crate aims to be compatible with.
 
 ## License
 
-Apache-2.0
+Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
+
+This software builds upon KiteSQL, which is also licensed under Apache 2.0 and is Copyright (c) 2024 KipData and contributors.

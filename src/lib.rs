@@ -354,6 +354,11 @@ impl SqlDialect for MySqlDialect {
         mysql_avg_type(arg)
     }
 
+    /// MySQL treats NULL as lower than every value: first for ASC, last for DESC.
+    fn nulls_first(&self, asc: bool) -> bool {
+        asc
+    }
+
     /// MySQL's level, code and text for each core diagnostic.
     fn map_diagnostic(&self, mut diagnostic: Diagnostic) -> Option<Diagnostic> {
         let (level, code, message) = match &diagnostic.kind {

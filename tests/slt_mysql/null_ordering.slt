@@ -1,0 +1,350 @@
+# NULL ordering: MySQL sorts NULL lower than every value, so NULLs come first for ASC and last for
+# DESC, in ORDER BY (with and without an index on the key), window PARTITION BY/ORDER BY and
+# GROUP_CONCAT ORDER BY. Expected values are MySQL 8.0.40 output.
+
+statement ok
+CREATE TABLE nul_t (id INT PRIMARY KEY, a INT, b VARCHAR(5))
+
+statement ok
+INSERT INTO nul_t VALUES (1,3,'x'),(2,NULL,'y'),(3,1,NULL),(4,NULL,'x'),(5,2,'y')
+
+statement ok
+CREATE TABLE nul_i (id INT PRIMARY KEY, a INT, b INT, KEY nul_ia (a), KEY nul_iab (a, b))
+
+statement ok
+INSERT INTO nul_i VALUES (1,3,1),(2,NULL,2),(3,1,NULL),(4,NULL,1),(5,2,2),(6,1,1)
+
+# ORDER BY on an unindexed column
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a, id
+----
+2 NULL
+4 NULL
+3 1
+5 2
+1 3
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a DESC, id
+----
+1 3
+5 2
+3 1
+2 NULL
+4 NULL
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a ASC, id DESC
+----
+4 NULL
+2 NULL
+3 1
+5 2
+1 3
+
+query TT
+SELECT b, id FROM nul_t ORDER BY b DESC, id
+----
+y 2
+y 5
+x 1
+x 4
+NULL 3
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a + 0, id
+----
+2 NULL
+4 NULL
+3 1
+5 2
+1 3
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a, id LIMIT 3
+----
+2 NULL
+4 NULL
+3 1
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a DESC, id LIMIT 2
+----
+1 3
+5 2
+
+query TT
+SELECT id, a FROM nul_t ORDER BY a, id LIMIT 2 OFFSET 1
+----
+4 NULL
+3 1
+
+query TT
+SELECT a AS x, id FROM nul_t ORDER BY x, id
+----
+NULL 2
+NULL 4
+1 3
+2 5
+3 1
+
+query TT
+SELECT id, a FROM nul_t ORDER BY 2, 1
+----
+2 NULL
+4 NULL
+3 1
+5 2
+1 3
+
+query TT
+SELECT a, COUNT(*) FROM nul_t GROUP BY a ORDER BY a
+----
+NULL 2
+1 1
+2 1
+3 1
+
+query TT
+SELECT a, COUNT(*) FROM nul_t GROUP BY a ORDER BY a DESC
+----
+3 1
+2 1
+1 1
+NULL 2
+
+query T
+SELECT DISTINCT a FROM nul_t ORDER BY a
+----
+NULL
+1
+2
+3
+
+query T
+SELECT DISTINCT b FROM nul_t ORDER BY b DESC
+----
+y
+x
+NULL
+
+query T
+SELECT a FROM nul_t UNION SELECT a FROM nul_i ORDER BY a
+----
+NULL
+1
+2
+3
+
+query T
+SELECT a FROM nul_t UNION ALL SELECT a FROM nul_i ORDER BY a DESC
+----
+3
+3
+2
+2
+1
+1
+1
+NULL
+NULL
+NULL
+NULL
+
+query T
+SELECT x.id FROM (SELECT id, a FROM nul_t ORDER BY a, id LIMIT 2) x ORDER BY x.id
+----
+2
+4
+
+# ORDER BY on indexed columns
+
+query TT
+SELECT id, a FROM nul_i ORDER BY a, id
+----
+2 NULL
+4 NULL
+3 1
+6 1
+5 2
+1 3
+
+query TT
+SELECT id, a FROM nul_i ORDER BY a DESC, id
+----
+1 3
+5 2
+3 1
+6 1
+2 NULL
+4 NULL
+
+query TT
+SELECT a, b FROM nul_i ORDER BY a, b
+----
+NULL 1
+NULL 2
+1 NULL
+1 1
+2 2
+3 1
+
+query TT
+SELECT a, b FROM nul_i ORDER BY a DESC, b DESC
+----
+3 1
+2 2
+1 1
+1 NULL
+NULL 2
+NULL 1
+
+query TT
+SELECT a, b FROM nul_i ORDER BY a, b DESC
+----
+NULL 2
+NULL 1
+1 1
+1 NULL
+2 2
+3 1
+
+query T
+SELECT a FROM nul_i ORDER BY a LIMIT 3
+----
+NULL
+NULL
+1
+
+query T
+SELECT a FROM nul_i ORDER BY a DESC LIMIT 3
+----
+3
+2
+1
+
+query TT
+SELECT id, a FROM nul_i WHERE a > 1 ORDER BY a DESC
+----
+1 3
+5 2
+
+query TT
+SELECT id, a FROM nul_i WHERE a >= 1 ORDER BY a, id
+----
+3 1
+6 1
+5 2
+1 3
+
+query TT
+SELECT id, a FROM nul_i WHERE a IS NULL OR a = 1 ORDER BY a, id
+----
+2 NULL
+4 NULL
+3 1
+6 1
+
+query T
+SELECT id FROM nul_i ORDER BY id DESC LIMIT 2
+----
+6
+5
+
+query T
+SELECT id FROM nul_i ORDER BY id LIMIT 2
+----
+1
+2
+
+query TT
+SELECT a, COUNT(*) FROM nul_i GROUP BY a ORDER BY a
+----
+NULL 2
+1 2
+2 1
+3 1
+
+query T
+SELECT DISTINCT a FROM nul_i ORDER BY a DESC
+----
+3
+2
+1
+NULL
+
+query TTT
+SELECT MIN(a), MAX(a), COUNT(a) FROM nul_i
+----
+1 3 4
+
+# Window ordering
+
+query TTT
+SELECT id, a, ROW_NUMBER() OVER (ORDER BY a, id) r FROM nul_t ORDER BY id
+----
+1 3 5
+2 NULL 1
+3 1 3
+4 NULL 2
+5 2 4
+
+query TTT
+SELECT id, a, ROW_NUMBER() OVER (ORDER BY a DESC, id) r FROM nul_t ORDER BY id
+----
+1 3 1
+2 NULL 4
+3 1 3
+4 NULL 5
+5 2 2
+
+query TTT
+SELECT id, a, RANK() OVER (ORDER BY a) r FROM nul_t ORDER BY id
+----
+1 3 5
+2 NULL 1
+3 1 3
+4 NULL 1
+5 2 4
+
+query TT
+SELECT id, ROW_NUMBER() OVER (PARTITION BY a ORDER BY id) r FROM nul_t ORDER BY id
+----
+1 1
+2 1
+3 1
+4 2
+5 1
+
+query TTT
+SELECT id, b, ROW_NUMBER() OVER (PARTITION BY a ORDER BY b, id) r FROM nul_t ORDER BY id
+----
+1 x 1
+2 y 2
+3 NULL 1
+4 x 1
+5 y 1
+
+# GROUP_CONCAT ordering
+
+query T
+SELECT GROUP_CONCAT(id ORDER BY a, id) FROM nul_t
+----
+2,4,3,5,1
+
+query T
+SELECT GROUP_CONCAT(id ORDER BY a DESC, id) FROM nul_t
+----
+1,5,3,2,4
+
+query T
+SELECT GROUP_CONCAT(id ORDER BY b, id SEPARATOR '|') FROM nul_t
+----
+3|1|4|2|5
+
+statement ok
+DROP TABLE nul_i
+
+statement ok
+DROP TABLE nul_t

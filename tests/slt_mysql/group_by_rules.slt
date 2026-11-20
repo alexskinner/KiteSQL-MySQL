@@ -1,0 +1,268 @@
+# GROUP BY under ONLY_FULL_GROUP_BY: a grouped column need not be selected; select items may be
+# expressions over grouped columns, aggregates, constants, or columns functionally dependent on a
+# grouped primary key; GROUP BY accepts select aliases and positions. Expected values are MySQL 8.0.40 output.
+
+statement ok
+CREATE TABLE gbr_g (id INT PRIMARY KEY, grp VARCHAR(5), d DECIMAL(5,2), n INT)
+
+statement ok
+INSERT INTO gbr_g VALUES (1,'a',1.50,10),(2,'a',2.00,20),(3,'b',1.50,NULL),(4,NULL,NULL,40)
+
+statement ok
+CREATE TABLE gbr_h (hid INT PRIMARY KEY, gid INT, v INT)
+
+statement ok
+INSERT INTO gbr_h VALUES (1,1,5),(2,1,6),(3,2,7)
+
+# Grouped columns that are not selected
+
+query T rowsort
+SELECT COUNT(*) FROM gbr_g GROUP BY grp
+----
+1
+1
+2
+
+query TT
+SELECT grp, COUNT(*) FROM gbr_g WHERE id < 4 GROUP BY grp, id ORDER BY id
+----
+a 1
+a 1
+b 1
+
+query T
+SELECT SUM(n) FROM gbr_g WHERE n IS NOT NULL GROUP BY grp ORDER BY 1
+----
+30
+40
+
+# Expressions over grouped columns
+
+query TT
+SELECT d + d, SUM(n) FROM gbr_g WHERE d IS NOT NULL GROUP BY d ORDER BY 1
+----
+3.00 10
+4.00 20
+
+query TT rowsort
+SELECT n * 2, COUNT(*) FROM gbr_g WHERE n IS NOT NULL GROUP BY n
+----
+20 1
+40 1
+80 1
+
+query TT rowsort
+SELECT UPPER(grp), COUNT(*) FROM gbr_g GROUP BY grp
+----
+A 2
+B 1
+NULL 1
+
+query TT rowsort
+SELECT grp, n + 1 FROM gbr_g GROUP BY grp, n
+----
+NULL 41
+a 11
+a 21
+b NULL
+
+query TT rowsort
+SELECT n + 1, COUNT(*) FROM gbr_g GROUP BY n
+----
+11 1
+21 1
+41 1
+NULL 1
+
+query TT rowsort
+SELECT n + 1 AS m, COUNT(*) FROM gbr_g GROUP BY n + 1
+----
+11 1
+21 1
+41 1
+NULL 1
+
+query T
+SELECT CONCAT(grp, '!') FROM gbr_g WHERE grp IS NOT NULL GROUP BY grp ORDER BY 1
+----
+a!
+b!
+
+query TT rowsort
+SELECT UPPER(grp), COUNT(*) FROM gbr_g GROUP BY UPPER(grp)
+----
+A 2
+B 1
+NULL 1
+
+query TT
+SELECT 1, COUNT(*) FROM gbr_g GROUP BY grp ORDER BY 2
+----
+1 1
+1 1
+1 2
+
+query TT rowsort
+SELECT grp, MAX(n) - MIN(n) FROM gbr_g GROUP BY grp
+----
+NULL 0
+a 10
+b NULL
+
+query TT rowsort
+SELECT x.grp, x.c FROM (SELECT grp, COUNT(*) c FROM gbr_g GROUP BY grp) x
+----
+NULL 1
+a 2
+b 1
+
+query T rowsort
+SELECT grp FROM gbr_g GROUP BY grp HAVING COUNT(*) > 1
+----
+a
+
+# Aliases and positions
+
+query TT rowsort
+SELECT grp AS x, COUNT(*) FROM gbr_g GROUP BY x
+----
+NULL 1
+a 2
+b 1
+
+query TT rowsort
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY 1
+----
+NULL 1
+a 2
+b 1
+
+query TTT rowsort
+SELECT grp, n, COUNT(*) FROM gbr_g GROUP BY 1, 2
+----
+NULL 40 1
+a 10 1
+a 20 1
+b NULL 1
+
+# A GROUP BY name is an input column before it is a select alias
+
+# MySQL: ERROR 1055: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.n' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT n AS grp, COUNT(*) FROM gbr_g GROUP BY grp
+
+# MySQL: ERROR 1055: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.grp' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT grp AS n, COUNT(*) FROM gbr_g GROUP BY n
+
+query TT rowsort
+SELECT grp AS n, COUNT(*) FROM gbr_g GROUP BY grp
+----
+NULL 1
+a 2
+b 1
+
+# MySQL: ERROR 1055: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.id' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT id AS grp, n FROM gbr_g GROUP BY grp
+
+query TT rowsort
+SELECT UPPER(grp) AS u, COUNT(*) FROM gbr_g GROUP BY u
+----
+A 2
+B 1
+NULL 1
+
+query TT rowsort
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY gbr_g.grp
+----
+NULL 1
+a 2
+b 1
+
+query TT rowsort
+SELECT gbr_g.grp, COUNT(*) FROM gbr_g GROUP BY grp
+----
+NULL 1
+a 2
+b 1
+
+query TT rowsort
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY 1 HAVING grp IS NOT NULL
+----
+a 2
+b 1
+
+query T rowsort
+SELECT DISTINCT grp FROM gbr_g GROUP BY grp, n
+----
+NULL
+a
+b
+
+# Columns functionally dependent on a grouped primary key
+
+query TTT
+SELECT id, grp, n FROM gbr_g GROUP BY id ORDER BY id
+----
+1 a 10
+2 a 20
+3 b NULL
+4 NULL 40
+
+query TTT
+SELECT gbr_g.id, gbr_g.grp, SUM(gbr_h.v) FROM gbr_g JOIN gbr_h ON gbr_h.gid = gbr_g.id GROUP BY gbr_g.id ORDER BY gbr_g.id
+----
+1 a 11
+2 a 7
+
+# Rejected: nonaggregated columns that are neither grouped nor functionally dependent (MySQL 1055)
+
+# MySQL: ERROR 1055: Expression #2 of SELECT list is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.n' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT grp, n FROM gbr_g GROUP BY grp
+
+# MySQL: ERROR 1055: Expression #1 of ORDER BY clause is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.n' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY grp ORDER BY n
+
+# MySQL: ERROR 1055: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.grp' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY UPPER(grp)
+
+# MySQL: ERROR 1055: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 't.gbr_g.n' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+statement error is not in GROUP BY clause
+SELECT n FROM gbr_g GROUP BY n + 1
+
+# MySQL: ERROR 1054: Unknown column 'id' in 'having clause'
+# (KiteSQL rejects it with its own HAVING message.)
+statement error
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY grp HAVING id > 1
+
+# Rejected: grouping on an aggregate (MySQL 1056) or an out-of-range position (MySQL 1054)
+
+# MySQL: ERROR 1056: Can't group on 'COUNT(*)'
+statement error Can't group on
+SELECT COUNT(*) FROM gbr_g GROUP BY 1
+
+# MySQL: ERROR 1056: Can't group on 'c'
+statement error Can't group on
+SELECT COUNT(*) AS c FROM gbr_g GROUP BY c
+
+# MySQL: ERROR 1056: Can't group on 'SUM(n)'
+statement error Can't group on
+SELECT grp, SUM(n) FROM gbr_g GROUP BY 2
+
+# MySQL: ERROR 1054: Unknown column '2' in 'group statement'
+statement error Unknown column
+SELECT grp FROM gbr_g GROUP BY 2
+
+# MySQL: ERROR 1054: Unknown column '0' in 'group statement'
+statement error Unknown column
+SELECT grp, COUNT(*) FROM gbr_g GROUP BY 0
+
+statement ok
+DROP TABLE gbr_h
+
+statement ok
+DROP TABLE gbr_g
